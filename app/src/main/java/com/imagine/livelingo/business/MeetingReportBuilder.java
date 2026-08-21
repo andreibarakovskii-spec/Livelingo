@@ -5,16 +5,16 @@ import java.util.List;
 public final class MeetingReportBuilder {
     private MeetingReportBuilder() {}
 
-    public static String build(MeetingSessionStore store, List<MeetingInsightEngine.Insight> insights) {
+    public static String build(MeetingSessionStore store, List<Insight> insights) {
         StringBuilder sb = new StringBuilder();
         long sec = store.durationMs() / 1000L;
         sb.append("Итоги встречи\n");
         sb.append(String.format("%02d:%02d", sec / 60, sec % 60)).append(" · ").append(store.entries().size()).append(" реплик\n\n");
-        appendSection(sb, "Решения", insights, "decision", "✓ ");
-        appendSection(sb, "Задачи", insights, "action", "☐ ");
-        appendSection(sb, "Риски", insights, "risk", "⚠ ");
-        appendSection(sb, "Вопросы", insights, "question", "? ");
-        appendSection(sb, "Следующие шаги", insights, "followup", "→ ");
+        appendSection(sb, "Решения", insights, Insight.Type.DECISION, "✓ ");
+        appendSection(sb, "Задачи", insights, Insight.Type.ACTION, "☐ ");
+        appendSection(sb, "Риски", insights, Insight.Type.RISK, "⚠ ");
+        appendSection(sb, "Вопросы", insights, Insight.Type.QUESTION, "? ");
+        appendSection(sb, "Следующие шаги", insights, Insight.Type.FOLLOW_UP, "→ ");
         sb.append("Стенограмма\n");
         for (MeetingSessionStore.Entry e : store.entries()) {
             long s = e.elapsedMs / 1000L;
@@ -27,12 +27,15 @@ public final class MeetingReportBuilder {
         return sb.toString().trim();
     }
 
-    private static void appendSection(StringBuilder sb, String title, List<MeetingInsightEngine.Insight> insights, String type, String prefix) {
+    private static void appendSection(StringBuilder sb, String title, List<Insight> insights, Insight.Type type, String prefix) {
         boolean any = false;
-        for (MeetingInsightEngine.Insight i : insights) {
-            if (type.equals(i.type)) {
+        for (Insight i : insights) {
+            if (type == i.type) {
                 if (!any) { sb.append(title).append("\n"); any = true; }
-                sb.append(prefix).append(i.text).append("\n");
+                sb.append(prefix).append(i.text);
+                if (i.owner != null && !i.owner.isBlank()) sb.append(" · ").append(i.owner);
+                if (i.due != null && !i.due.isBlank()) sb.append(" · ").append(i.due);
+                sb.append("\n");
             }
         }
         if (any) sb.append("\n");
