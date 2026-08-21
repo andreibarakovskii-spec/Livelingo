@@ -21,16 +21,21 @@ import com.imagine.livelingo.business.MeetingInsightEngine;
 import com.imagine.livelingo.business.MeetingReportBuilder;
 import com.imagine.livelingo.business.MeetingSessionStore;
 import com.imagine.livelingo.core.SpokenDiff;
+import com.imagine.livelingo.security.EncryptedMeetingVault;
+import com.imagine.livelingo.security.MeetingHistoryController;
+import com.imagine.livelingo.security.MeetingHistoryUi;
+import com.imagine.livelingo.security.SecureScreen;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 
 public class MainActivity extends Activity implements LiveSpeechRecognizer.Listener {
     private static final int REQ=7;
+    private static final int REQ_UNLOCK_MEETING=41;
     private TextView status,sourceText,translatedText,detected,headset,modeTitle,modeSubtitle,meetingInsights,meetingResult;
     private Button mainButton,debugButton,modeTranslate,modeConversation,modeMeeting,navLive,navMeetings,navLibrary,navProfile,shareMeetingButton,presentationButton;
     private Spinner inputSpinner,targetSpinner;
-    private LinearLayout livePage,meetingsPage,libraryPage,profilePage,meetingResultCard;
+    private LinearLayout livePage,meetingsPage,libraryPage,profilePage,meetingResultCard,meetingHistoryHost;
     private LiveSpeechRecognizer speech; private TranslationEngine translator; private OfflineSpeaker speaker;
     private final SpokenDiff spokenDiff=new SpokenDiff(2); private boolean active;
     private final Handler debounce=new Handler(Looper.getMainLooper()); private Runnable pendingTranslation;
@@ -38,14 +43,26 @@ public class MainActivity extends Activity implements LiveSpeechRecognizer.Liste
     private final MeetingSessionStore meetingStore=new MeetingSessionStore();
     private final MeetingInsightEngine meetingEngine=new MeetingInsightEngine();
     private final List<MeetingInsightEngine.Insight> meetingInsightList=new ArrayList<>();
+    private MeetingHistoryController historyController; private MeetingHistoryUi historyUi; private String openedMeetingId;
 
     @Override protected void onCreate(Bundle b){
         super.onCreate(b); trace=new DebugTrace(this); getWindow().setStatusBarColor(0xFFF7F8FB); buildUi();
         meetingStore.attachVault(this);
+        historyController=new MeetingHistoryController(this,new MeetingHistoryController.Listener(){
+            public void onList(List<com.imagine.livelingo.security.MeetingVaultRepository.Item> items){historyUi.render(items);}
+            public void onMeeting(EncryptedMeetingVault.StoredMeeting meeting){openedMeetingId=meeting.id;meetingResult.setText(meeting.payload);meetingResultCard.setVisibility(View.VISIBLE);SecureScreen.protect(MainActivity.this);}
+            public void onError(String message){Toast.makeText(MainActivity.this,message,Toast.LENGTH_LONG).show();}
+            public void onDeleted(){openedMeetingId=null;meetingResult.setText("Выберите сохранённую встречу");meetingResultCard.setVisibility(View.GONE);SecureScreen.unprotect(MainActivity.this);}
+        });
+        historyUi=new MeetingHistoryUi(this,meetingHistoryHost,new MeetingHistoryUi.Actions(){
+            public void open(String id){if(!historyController.requestOpen(id,REQ_UNLOCK_MEETING)) Toast.makeText(MainActivity.this,"На устройстве не настроена защита экрана",Toast.LENGTH_LONG).show();}
+            public void delete(String id){historyController.delete(id);}
+            public void wipeAll(){historyController.wipeAll();}
+        });
         translator=new TranslationEngine(); speaker=new OfflineSpeaker(this,s->{status.setText(s);trace.log("TTS_STATUS",s);}); speech=new LiveSpeechRecognizer(this,this);
         mainButton.setOnClickListener(v->toggle()); debugButton.setOnClickListener(v->shareTrace());
         modeTranslate.setOnClickListener(v->selectMode("translate")); modeConversation.setOnClickListener(v->selectMode("conversation")); modeMeeting.setOnClickListener(v->selectMode("meeting"));
-        navLive.setOnClickListener(v->showPage("live")); navMeetings.setOnClickListener(v->showPage("meetings")); navLibrary.setOnClickListener(v->showPage("library")); navProfile.setOnClickListener(v->showPage("profile"));
+        navLive.setOnClickListener(v->showPage("live")); navMeetings.setOnClickListener(v->{showPage("meetings");historyController.refresh();}); navLibrary.setOnClickListener(v->showPage("library")); navProfile.setOnClickListener(v->showPage("profile"));
         shareMeetingButton.setOnClickListener(v->shareMeeting()); presentationButton.setOnClickListener(v->Toast.makeText(this,"Генератор презентации подготовлен как следующий модуль",Toast.LENGTH_SHORT).show());
         inputSpinner.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener(){public void onItemSelected(android.widget.AdapterView<?> p,View v,int pos,long id){manualInput=LanguageCatalog.inputCodeForDisplay((String)inputSpinner.getSelectedItem());trace.log("UI_INPUT_LANGUAGE",manualInput);speech.setInputLanguage(manualInput);detected.setText("auto".equals(manualInput)?"Автоопределение языка":"Говорит: "+LanguageCatalog.displayForCode(manualInput));spokenDiff.reset();translationSeq++;}public void onNothingSelected(android.widget.AdapterView<?> p){}});
         targetSpinner.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener(){public void onItemSelected(android.widget.AdapterView<?> p,View v,int pos,long id){String c=LanguageCatalog.codeForDisplay((String)targetSpinner.getSelectedItem());trace.log("UI_TARGET_LANGUAGE",c);translator.setTarget(c);speaker.selectOfflineVoice(c);spokenDiff.reset();translationSeq++;}public void onNothingSelected(android.widget.AdapterView<?> p){}});
@@ -55,6 +72,7 @@ public class MainActivity extends Activity implements LiveSpeechRecognizer.Liste
     private void showPage(String page){
         livePage.setVisibility("live".equals(page)?View.VISIBLE:View.GONE); meetingsPage.setVisibility("meetings".equals(page)?View.VISIBLE:View.GONE); libraryPage.setVisibility("library".equals(page)?View.VISIBLE:View.GONE); profilePage.setVisibility("profile".equals(page)?View.VISIBLE:View.GONE);
         navLive.setAlpha("live".equals(page)?1f:.45f); navMeetings.setAlpha("meetings".equals(page)?1f:.45f); navLibrary.setAlpha("library".equals(page)?1f:.45f); navProfile.setAlpha("profile".equals(page)?1f:.45f);
+        if(!"meetings".equals(page)){SecureScreen.unprotect(this);openedMeetingId=null;meetingResultCard.setVisibility(View.GONE);}
     }
 
     private void selectMode(String mode){
@@ -74,6 +92,14 @@ public class MainActivity extends Activity implements LiveSpeechRecognizer.Liste
     }
     @Override public void onRequestPermissionsResult(int r,String[] p,int[] g){super.onRequestPermissionsResult(r,p,g);headset.setText(BluetoothRouter.routeToHeadset(this));trace.log("PERMISSION_RESULT",java.util.Arrays.toString(g));}
 
+    @Override protected void onActivityResult(int requestCode,int resultCode,Intent data){
+        super.onActivityResult(requestCode,resultCode,data);
+        if(requestCode==REQ_UNLOCK_MEETING){
+            if(resultCode==RESULT_OK) historyController.onAuthenticationSucceeded();
+            else Toast.makeText(this,"Доступ к встрече отменён",Toast.LENGTH_SHORT).show();
+        }
+    }
+
     private void toggle(){
         if(checkSelfPermission(Manifest.permission.RECORD_AUDIO)!=PackageManager.PERMISSION_GRANTED){requestPermissionsIfNeeded();return;}
         active=!active; trace.log("UI_TOGGLE",active?"start":"stop");
@@ -84,7 +110,7 @@ public class MainActivity extends Activity implements LiveSpeechRecognizer.Liste
             speech.start();status.setText("Слушаю…");
         } else {
             speech.stop();speaker.stop();LiveLingoForegroundService.stop(this);if(pendingTranslation!=null)debounce.removeCallbacks(pendingTranslation);translationSeq++;status.setText("Остановлено");
-            if("meeting".equals(currentMode)){renderMeetingReport();saveMeetingEncrypted();showPage("meetings");}
+            if("meeting".equals(currentMode)){renderMeetingReport();saveMeetingEncrypted();showPage("meetings");historyController.refresh();}
         }
         selectMode(currentMode);
     }
@@ -121,12 +147,12 @@ public class MainActivity extends Activity implements LiveSpeechRecognizer.Liste
             Toast.makeText(this,"Не удалось зашифровать встречу",Toast.LENGTH_LONG).show();
         }
     }
-    private void shareMeeting(){String report=meetingResult.getText().toString();if(report.isBlank()){Toast.makeText(this,"Сначала завершите встречу",Toast.LENGTH_SHORT).show();return;}Intent i=new Intent(Intent.ACTION_SEND);i.setType("text/plain");i.putExtra(Intent.EXTRA_TEXT,report);startActivity(Intent.createChooser(i,"Поделиться итогами встречи"));}
+    private void shareMeeting(){String report=meetingResult.getText().toString();if(report.isBlank()||openedMeetingId==null){Toast.makeText(this,"Сначала откройте защищённую встречу",Toast.LENGTH_SHORT).show();return;}Intent i=new Intent(Intent.ACTION_SEND);i.setType("text/plain");i.putExtra(Intent.EXTRA_TEXT,report);startActivity(Intent.createChooser(i,"Поделиться итогами встречи"));}
 
     @Override public void onStatus(String s){trace.log("SPEECH_STATUS",s);runOnUiThread(()->status.setText(s));}
     @Override public void onError(String e){trace.log("SPEECH_ERROR",e);runOnUiThread(()->status.setText(e));}
     private void shareTrace(){try{File f=trace.file();Uri uri=FileProvider.getUriForFile(this,getPackageName()+".fileprovider",f);Intent i=new Intent(Intent.ACTION_SEND);i.setType("text/plain");i.putExtra(Intent.EXTRA_STREAM,uri);i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);startActivity(Intent.createChooser(i,"Отправить журнал LiveLingo"));}catch(Exception e){Toast.makeText(this,"Не удалось открыть журнал: "+e.getMessage(),Toast.LENGTH_LONG).show();}}
-    @Override protected void onDestroy(){if(!active){if(speech!=null)speech.stop();LiveLingoForegroundService.stop(this);}if(speaker!=null)speaker.close();if(translator!=null)translator.close();super.onDestroy();}
+    @Override protected void onDestroy(){SecureScreen.unprotect(this);if(!active){if(speech!=null)speech.stop();LiveLingoForegroundService.stop(this);}if(speaker!=null)speaker.close();if(translator!=null)translator.close();super.onDestroy();}
 
     private void buildUi(){
         LinearLayout shell=new LinearLayout(this);shell.setOrientation(LinearLayout.VERTICAL);shell.setBackgroundColor(0xFFF7F8FB);
@@ -141,7 +167,7 @@ public class MainActivity extends Activity implements LiveSpeechRecognizer.Liste
         LinearLayout live=card(Color.WHITE);LinearLayout liveHead=new LinearLayout(this);liveHead.setGravity(Gravity.CENTER_VERTICAL);liveHead.addView(tv("LIVE",11,true,0xFFE55353));liveHead.addView(tv("  локально на устройстве",11,false,0xFF8D94A0));live.addView(liveHead);live.addView(tv("ОРИГИНАЛ",10,true,0xFF9AA1AD),lp(-1,-2,0,14,0,0));sourceText=tv("Здесь появится речь собеседника",17,false,0xFF30343B);live.addView(sourceText,lp(-1,-2,0,6,0,15));View divider=new View(this);divider.setBackgroundColor(0xFFECEEF2);live.addView(divider,new LinearLayout.LayoutParams(-1,dp(1)));live.addView(tv("ПЕРЕВОД",10,true,0xFF9AA1AD),lp(-1,-2,0,15,0,0));translatedText=tv("Здесь появится перевод",22,true,0xFF111318);live.addView(translatedText,lp(-1,-2,0,6,0,0));livePage.addView(live);
         meetingInsights=tv("Пока нет важных моментов. Во время совещания здесь появятся решения, задачи, риски и вопросы.",14,false,0xFF444A55);meetingInsights.setBackground(roundRect(0xFFFFFBEB,18));meetingInsights.setPadding(dp(16),dp(14),dp(16),dp(14));livePage.addView(meetingInsights,lp(-1,-2,0,12,0,0));debugButton=new Button(this);debugButton.setText("Отправить журнал теста");debugButton.setAllCaps(false);livePage.addView(debugButton,lp(-1,dp(48),0,14,0,0));
 
-        meetingsPage=new LinearLayout(this);meetingsPage.setOrientation(LinearLayout.VERTICAL);pages.addView(meetingsPage);meetingsPage.addView(tv("Встречи",27,true,0xFF111318));meetingsPage.addView(tv("Защищённая история совещаний и AI-итоги",14,false,0xFF747B88),lp(-1,-2,0,3,0,14));meetingResultCard=card(Color.WHITE);meetingResult=tv("Завершённые встречи появятся здесь",14,false,0xFF333841);meetingResultCard.addView(meetingResult);LinearLayout actions=new LinearLayout(this);shareMeetingButton=new Button(this);shareMeetingButton.setText("Поделиться");presentationButton=new Button(this);presentationButton.setText("Презентация");actions.addView(shareMeetingButton,new LinearLayout.LayoutParams(0,dp(48),1));actions.addView(presentationButton,new LinearLayout.LayoutParams(0,dp(48),1));meetingResultCard.addView(actions,lp(-1,-2,0,12,0,0));meetingsPage.addView(meetingResultCard);
+        meetingsPage=new LinearLayout(this);meetingsPage.setOrientation(LinearLayout.VERTICAL);pages.addView(meetingsPage);meetingsPage.addView(tv("Встречи",27,true,0xFF111318));meetingsPage.addView(tv("Защищённая история совещаний и AI-итоги",14,false,0xFF747B88),lp(-1,-2,0,3,0,14));meetingHistoryHost=new LinearLayout(this);meetingHistoryHost.setOrientation(LinearLayout.VERTICAL);meetingsPage.addView(meetingHistoryHost);meetingResultCard=card(Color.WHITE);meetingResult=tv("Выберите сохранённую встречу",14,false,0xFF333841);meetingResultCard.addView(meetingResult);LinearLayout actions=new LinearLayout(this);shareMeetingButton=new Button(this);shareMeetingButton.setText("Поделиться");presentationButton=new Button(this);presentationButton.setText("Презентация");actions.addView(shareMeetingButton,new LinearLayout.LayoutParams(0,dp(48),1));actions.addView(presentationButton,new LinearLayout.LayoutParams(0,dp(48),1));meetingResultCard.addView(actions,lp(-1,-2,0,12,0,0));meetingResultCard.setVisibility(View.GONE);meetingsPage.addView(meetingResultCard,lp(-1,-2,0,12,0,0));
 
         libraryPage=new LinearLayout(this);libraryPage.setOrientation(LinearLayout.VERTICAL);pages.addView(libraryPage);libraryPage.addView(tv("Библиотека",27,true,0xFF111318));libraryPage.addView(tv("Транскрипты, переводы и будущие презентации",14,false,0xFF747B88));
         profilePage=new LinearLayout(this);profilePage.setOrientation(LinearLayout.VERTICAL);pages.addView(profilePage);profilePage.addView(tv("Профиль и безопасность",27,true,0xFF111318));profilePage.addView(tv("Локальное хранение · зашифрованные встречи · AI-модели",14,false,0xFF747B88));
