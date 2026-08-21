@@ -21,10 +21,10 @@ public final class OfflineSpeaker implements TextToSpeech.OnInitListener {
         Voice best = tts.getVoices().stream().filter(v -> !v.isNetworkConnectionRequired())
                 .filter(v -> v.getLocale().getLanguage().equals(wanted.getLanguage()))
                 .max(Comparator.comparingInt(Voice::getQuality)).orElse(null);
-        if (best != null) { tts.setVoice(best); tts.setSpeechRate(1.06f); return true; }
+        if (best != null) { tts.setVoice(best); tts.setSpeechRate(1.10f); return true; }
         return tts.setLanguage(wanted) >= TextToSpeech.LANG_AVAILABLE;
     }
-    public void speak(String text) {
+    public void speak(String text, boolean finalChunk) {
         if (!ready || text == null || text.isBlank()) return;
         Bundle params = new Bundle(); params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1f);
         tts.speak(text, TextToSpeech.QUEUE_ADD, params, "live-" + System.nanoTime());
