@@ -114,7 +114,6 @@ public final class WhisperOnnxDecoder implements AutoCloseable {
         return best;
     }
 
-    /** Whisper language is chosen from logits immediately after the start token. */
     private double scoreLanguage(OrtSession.Result cacheOut,String lang) throws Exception {
         OnnxTensor inputIds=null;
         OnnxTensor empty=null;
@@ -124,7 +123,8 @@ public final class WhisperOnnxDecoder implements AutoCloseable {
             empty=createZeros(emptyDecoderCacheShape);
             bindInitialCache(decInputs,cacheOut,empty);
             try(OrtSession.Result out=decoderSession.run(decInputs)){
-                float[][][] logits=(float[][][])((OnnxTensor)out.get("logits").orElseThrow()).getValue();
+                OnnxTensor logitsTensor=(OnnxTensor)out.get("logits").orElseThrow(() -> new IllegalStateException("Whisper decoder: logits output missing"));
+                float[][][] logits=(float[][][])logitsTensor.getValue();
                 return logSoftmaxAt(logits[0][0],getLanguageId(lang));
             }
         }finally{
@@ -152,7 +152,8 @@ public final class WhisperOnnxDecoder implements AutoCloseable {
                 OrtSession.Result cur=decoderSession.run(decInputs);
                 if(prev!=null)prev.close();prev=cur;
                 if(step<prompt.length-1)continue;
-                float[][][] logits=(float[][][])((OnnxTensor)cur.get("logits").orElseThrow()).getValue();
+                OnnxTensor logitsTensor=(OnnxTensor)cur.get("logits").orElseThrow(() -> new IllegalStateException("Whisper decoder: logits output missing"));
+                float[][][] logits=(float[][][])logitsTensor.getValue();
                 int next=argmax(logits[0][0]);
                 if(next==EOS)break;
                 tokens.add(next);
@@ -169,18 +170,22 @@ public final class WhisperOnnxDecoder implements AutoCloseable {
         for(int i=0;i<DECODER_LAYERS;i++){
             decInputs.put("past_key_values."+i+".decoder.key",empty);
             decInputs.put("past_key_values."+i+".decoder.value",empty);
-            decInputs.put("past_key_values."+i+".encoder.key",(OnnxTensor)cacheOut.get("present."+i+".encoder.key").orElseThrow());
-            decInputs.put("past_key_values."+i+".encoder.value",(OnnxTensor)cacheOut.get("present."+i+".encoder.value").orElseThrow());
+            decInputs.put("past_key_values."+i+".encoder.key",requiredTensor(cacheOut,"present."+i+".encoder.key"));
+            decInputs.put("past_key_values."+i+".encoder.value",requiredTensor(cacheOut,"present."+i+".encoder.value"));
         }
     }
 
     private void bindRollingCache(Map<String,OnnxTensor> decInputs,OrtSession.Result cacheOut,OrtSession.Result prev){
         for(int i=0;i<DECODER_LAYERS;i++){
-            decInputs.put("past_key_values."+i+".decoder.key",(OnnxTensor)prev.get("present."+i+".decoder.key").orElseThrow());
-            decInputs.put("past_key_values."+i+".decoder.value",(OnnxTensor)prev.get("present."+i+".decoder.value").orElseThrow());
-            decInputs.put("past_key_values."+i+".encoder.key",(OnnxTensor)cacheOut.get("present."+i+".encoder.key").orElseThrow());
-            decInputs.put("past_key_values."+i+".encoder.value",(OnnxTensor)cacheOut.get("present."+i+".encoder.value").orElseThrow());
+            decInputs.put("past_key_values."+i+".decoder.key",requiredTensor(prev,"present."+i+".decoder.key"));
+            decInputs.put("past_key_values."+i+".decoder.value",requiredTensor(prev,"present."+i+".decoder.value"));
+            decInputs.put("past_key_values."+i+".encoder.key",requiredTensor(cacheOut,"present."+i+".encoder.key"));
+            decInputs.put("past_key_values."+i+".encoder.value",requiredTensor(cacheOut,"present."+i+".encoder.value"));
         }
+    }
+
+    private OnnxTensor requiredTensor(OrtSession.Result result,String name){
+        return (OnnxTensor)result.get(name).orElseThrow(() -> new IllegalStateException("Whisper model output missing: "+name));
     }
 
     private String detokenize(ArrayList<Integer> tokens) throws Exception {
@@ -188,16 +193,28 @@ public final class WhisperOnnxDecoder implements AutoCloseable {
         try(OnnxTensor seqTensor=OnnxTensor.createTensor(env,IntBuffer.wrap(seq),new long[]{1,1,seq.length})){
             Map<String,OnnxTensor> detokInputs=new LinkedHashMap<>();detokInputs.put("sequences",seqTensor);
             try(OrtSession.Result detokOut=detokenizerSession.run(detokInputs)){
-                String text=((String[][])detokOut.get(0).getValue())[0][0];
-                return clean(text);
+                Object value=detokOut.get(0).getValue();
+                if(!(value instanceof String[][]))throw new IllegalStateException("Whisper detokenizer returned unexpected output");
+                String[][] text=(String[][])value;
+                if(text.length==0||text[0].length==0)return "";
+                return clean(text[0][0]);
             }
         }
     }
 
     private static final class DecodeResult { final ArrayList<Integer> tokens; DecodeResult(ArrayList<Integer> tokens){this.tokens=tokens;} }
-    private OnnxTensor createZeros(long[] shape) throws OrtException { long n=1;for(long d:shape)n*=Math.max(0,d);if(n>Integer.MAX_VALUE)throw new OrtException("Tensor too large");return OnnxTensor.createTensor(env,FloatBuffer.wrap(new float[(int)n]),shape); }
-    private static int argmax(float[] a){int idx=0;for(int i=1;i<a.length;i++)if(a[i]>a[idx])idx=i;return idx;}
-    private static double logSoftmaxAt(float[] logits,int index){if(index<0||index>=logits.length)return Double.NEGATIVE_INFINITY;float max=logits[0];for(int i=1;i<logits.length;i++)if(logits[i]>max)max=logits[i];double sum=0;for(float v:logits)sum+=Math.exp(v-max);return (logits[index]-max)-Math.log(sum);}
+    private OnnxTensor createZeros(long[] shape) throws OrtException {
+        long n=1;
+        for(long d:shape){
+            if(d<0)throw new IllegalArgumentException("Negative tensor dimension");
+            if(d==0){n=0;break;}
+            if(n>Integer.MAX_VALUE/Math.max(1,d))throw new IllegalArgumentException("Tensor too large");
+            n*=d;
+        }
+        return OnnxTensor.createTensor(env,FloatBuffer.wrap(new float[(int)n]),shape);
+    }
+    private static int argmax(float[] a){if(a==null||a.length==0)throw new IllegalArgumentException("Empty logits");int idx=0;for(int i=1;i<a.length;i++)if(a[i]>a[idx])idx=i;return idx;}
+    private static double logSoftmaxAt(float[] logits,int index){if(logits==null||logits.length==0||index<0||index>=logits.length)return Double.NEGATIVE_INFINITY;float max=logits[0];for(int i=1;i<logits.length;i++)if(logits[i]>max)max=logits[i];double sum=0;for(float v:logits)sum+=Math.exp(v-max);return (logits[index]-max)-Math.log(sum);}
     private static String clean(String s){if(s==null)return "";String x=s.replaceAll("<\\|[^>]*\\|>\\s*","").trim().replace("...","");if(x.length()>1&&Character.isLowerCase(x.charAt(0)))x=Character.toUpperCase(x.charAt(0))+x.substring(1);return x.trim();}
     private static int getLanguageId(String lang){for(int i=0;i<LANGUAGES.length;i++)if(LANGUAGES[i].equals(lang))return 50259+i;return 50259;}
     private static String normalize(String language){return language==null||language.isBlank()||"auto".equals(language)?null:language.split("[-_]")[0].toLowerCase();}
