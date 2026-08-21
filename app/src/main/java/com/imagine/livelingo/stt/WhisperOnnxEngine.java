@@ -29,8 +29,10 @@ public final class WhisperOnnxEngine implements SttEngine {
         this.listener = listener;
     }
 
+    private File modelDir() { return new File(context.getFilesDir(), "models/whisper"); }
+
     @Override public boolean isAvailable() {
-        File dir = context.getFilesDir();
+        File dir = modelDir();
         for (String name : REQUIRED) if (!new File(dir, name).isFile()) return false;
         return true;
     }
@@ -48,9 +50,8 @@ public final class WhisperOnnxEngine implements SttEngine {
         running = true;
         listener.onStatus("LiveLingo AI: запускаю локальное распознавание…");
         listener.onReady();
-        // Audio capture + ONNX decoding is intentionally isolated behind this
-        // interface. Model installation will enable the native decoder without
-        // changing MainActivity or the business layer.
+        // Audio capture + ONNX decoding is isolated behind this interface.
+        // The installed model bundle lives in files/models/whisper.
     }
 
     @Override public void stop() { running = false; }
