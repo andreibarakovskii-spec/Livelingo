@@ -41,6 +41,7 @@ public class MainActivity extends Activity implements LiveSpeechRecognizer.Liste
 
     @Override protected void onCreate(Bundle b){
         super.onCreate(b); trace=new DebugTrace(this); getWindow().setStatusBarColor(0xFFF7F8FB); buildUi();
+        meetingStore.attachVault(this);
         translator=new TranslationEngine(); speaker=new OfflineSpeaker(this,s->{status.setText(s);trace.log("TTS_STATUS",s);}); speech=new LiveSpeechRecognizer(this,this);
         mainButton.setOnClickListener(v->toggle()); debugButton.setOnClickListener(v->shareTrace());
         modeTranslate.setOnClickListener(v->selectMode("translate")); modeConversation.setOnClickListener(v->selectMode("conversation")); modeMeeting.setOnClickListener(v->selectMode("meeting"));
@@ -83,7 +84,7 @@ public class MainActivity extends Activity implements LiveSpeechRecognizer.Liste
             speech.start();status.setText("Слушаю…");
         } else {
             speech.stop();speaker.stop();LiveLingoForegroundService.stop(this);if(pendingTranslation!=null)debounce.removeCallbacks(pendingTranslation);translationSeq++;status.setText("Остановлено");
-            if("meeting".equals(currentMode)){renderMeetingReport();showPage("meetings");}
+            if("meeting".equals(currentMode)){renderMeetingReport();saveMeetingEncrypted();showPage("meetings");}
         }
         selectMode(currentMode);
     }
@@ -109,6 +110,17 @@ public class MainActivity extends Activity implements LiveSpeechRecognizer.Liste
     }
 
     private void renderMeetingReport(){String report=MeetingReportBuilder.build(meetingStore,meetingInsightList);meetingResult.setText(report);meetingResultCard.setVisibility(View.VISIBLE);}
+    private void saveMeetingEncrypted(){
+        try{
+            String report=meetingResult.getText().toString();
+            String id=meetingStore.saveEncrypted("Совещание",report);
+            trace.log("MEETING_VAULT_SAVE",id);
+            Toast.makeText(this,"Встреча сохранена в защищённое хранилище",Toast.LENGTH_SHORT).show();
+        }catch(Exception e){
+            trace.log("MEETING_VAULT_ERROR",e.getClass().getSimpleName());
+            Toast.makeText(this,"Не удалось зашифровать встречу",Toast.LENGTH_LONG).show();
+        }
+    }
     private void shareMeeting(){String report=meetingResult.getText().toString();if(report.isBlank()){Toast.makeText(this,"Сначала завершите встречу",Toast.LENGTH_SHORT).show();return;}Intent i=new Intent(Intent.ACTION_SEND);i.setType("text/plain");i.putExtra(Intent.EXTRA_TEXT,report);startActivity(Intent.createChooser(i,"Поделиться итогами встречи"));}
 
     @Override public void onStatus(String s){trace.log("SPEECH_STATUS",s);runOnUiThread(()->status.setText(s));}
@@ -126,20 +138,19 @@ public class MainActivity extends Activity implements LiveSpeechRecognizer.Liste
         LinearLayout hero=card(0xFF111318);modeTitle=tv("",23,true,Color.WHITE);modeSubtitle=tv("",14,false,0xFFB8BEC8);hero.addView(modeTitle);hero.addView(modeSubtitle,lp(-1,-2,0,6,0,16));LinearLayout statusRow=new LinearLayout(this);statusRow.setGravity(Gravity.CENTER_VERTICAL);statusRow.addView(tv("●",12,true,0xFF61D095));status=tv("Готов",13,true,0xFFE9EDF4);statusRow.addView(status,lp(-2,-2,6,0,0,0));hero.addView(statusRow);livePage.addView(hero,lp(-1,-2,0,0,0,14));
         LinearLayout lang=card(Color.WHITE);lang.addView(tv("ЯЗЫК СОБЕСЕДНИКА",11,true,0xFF8B929F));inputSpinner=new Spinner(this);inputSpinner.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,new ArrayList<>(LanguageCatalog.INPUTS.keySet())));lang.addView(inputSpinner,lp(-1,dp(48),0,4,0,10));lang.addView(tv("ПЕРЕВОДИТЬ НА",11,true,0xFF8B929F));targetSpinner=new Spinner(this);targetSpinner.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,new ArrayList<>(LanguageCatalog.TARGETS.keySet())));lang.addView(targetSpinner,lp(-1,dp(48),0,4,0,8));detected=tv("Автоопределение языка",13,true,0xFF3157D5);lang.addView(detected);livePage.addView(lang,lp(-1,-2,0,0,0,12));
         mainButton=new Button(this);mainButton.setAllCaps(false);mainButton.setTextSize(16);mainButton.setTextColor(Color.WHITE);mainButton.setTypeface(Typeface.DEFAULT,Typeface.BOLD);mainButton.setBackground(roundRect(0xFF3157D5,24));livePage.addView(mainButton,lp(-1,dp(60),0,0,0,10));headset=tv("",12,false,0xFF7A818D);headset.setGravity(Gravity.CENTER);livePage.addView(headset,lp(-1,-2,0,0,0,14));
-        LinearLayout live=card(Color.WHITE);live.addView(tv("LIVE · локально на устройстве",11,true,0xFFE55353));live.addView(tv("ОРИГИНАЛ",10,true,0xFF9AA1AD),lp(-1,-2,0,14,0,0));sourceText=tv("Здесь появится речь собеседника",17,false,0xFF30343B);live.addView(sourceText,lp(-1,-2,0,6,0,15));View divider=new View(this);divider.setBackgroundColor(0xFFECEEF2);live.addView(divider,new LinearLayout.LayoutParams(-1,dp(1)));live.addView(tv("ПЕРЕВОД",10,true,0xFF9AA1AD),lp(-1,-2,0,15,0,0));translatedText=tv("Здесь появится перевод",22,true,0xFF111318);live.addView(translatedText,lp(-1,-2,0,6,0,0));livePage.addView(live);
-        meetingInsights=tv("Пока нет важных моментов. Во время совещания здесь появятся решения, задачи, риски и вопросы.",14,false,0xFF444A55);meetingInsights.setBackground(roundRect(0xFFFFFBEB,18));meetingInsights.setPadding(dp(16),dp(14),dp(16),dp(14));livePage.addView(meetingInsights,lp(-1,-2,0,12,0,0));
-        debugButton=new Button(this);debugButton.setText("Отправить журнал теста");debugButton.setAllCaps(false);livePage.addView(debugButton,lp(-1,dp(48),0,14,0,0));
+        LinearLayout live=card(Color.WHITE);LinearLayout liveHead=new LinearLayout(this);liveHead.setGravity(Gravity.CENTER_VERTICAL);liveHead.addView(tv("LIVE",11,true,0xFFE55353));liveHead.addView(tv("  локально на устройстве",11,false,0xFF8D94A0));live.addView(liveHead);live.addView(tv("ОРИГИНАЛ",10,true,0xFF9AA1AD),lp(-1,-2,0,14,0,0));sourceText=tv("Здесь появится речь собеседника",17,false,0xFF30343B);live.addView(sourceText,lp(-1,-2,0,6,0,15));View divider=new View(this);divider.setBackgroundColor(0xFFECEEF2);live.addView(divider,new LinearLayout.LayoutParams(-1,dp(1)));live.addView(tv("ПЕРЕВОД",10,true,0xFF9AA1AD),lp(-1,-2,0,15,0,0));translatedText=tv("Здесь появится перевод",22,true,0xFF111318);live.addView(translatedText,lp(-1,-2,0,6,0,0));livePage.addView(live);
+        meetingInsights=tv("Пока нет важных моментов. Во время совещания здесь появятся решения, задачи, риски и вопросы.",14,false,0xFF444A55);meetingInsights.setBackground(roundRect(0xFFFFFBEB,18));meetingInsights.setPadding(dp(16),dp(14),dp(16),dp(14));livePage.addView(meetingInsights,lp(-1,-2,0,12,0,0));debugButton=new Button(this);debugButton.setText("Отправить журнал теста");debugButton.setAllCaps(false);livePage.addView(debugButton,lp(-1,dp(48),0,14,0,0));
 
-        meetingsPage=new LinearLayout(this);meetingsPage.setOrientation(LinearLayout.VERTICAL);pages.addView(meetingsPage);meetingsPage.addView(tv("Meetings",26,true,0xFF111318));meetingsPage.addView(tv("Здесь сохраняются итоги встреч и важные решения.",14,false,0xFF747B88),lp(-1,-2,0,4,0,14));meetingResultCard=card(Color.WHITE);meetingResultCard.setVisibility(View.GONE);meetingResult=tv("",14,false,0xFF252A31);meetingResultCard.addView(meetingResult);shareMeetingButton=new Button(this);shareMeetingButton.setText("Поделиться");meetingResultCard.addView(shareMeetingButton,lp(-1,dp(48),0,12,0,0));presentationButton=new Button(this);presentationButton.setText("Создать презентацию");meetingResultCard.addView(presentationButton,lp(-1,dp(48),0,8,0,0));meetingsPage.addView(meetingResultCard);
-        libraryPage=new LinearLayout(this);libraryPage.setOrientation(LinearLayout.VERTICAL);pages.addView(libraryPage);libraryPage.addView(tv("Library",26,true,0xFF111318));libraryPage.addView(tv("Записи, отчёты, документы и будущие презентации будут храниться здесь.",14,false,0xFF747B88),lp(-1,-2,0,6,0,0));
-        profilePage=new LinearLayout(this);profilePage.setOrientation(LinearLayout.VERTICAL);pages.addView(profilePage);profilePage.addView(tv("Profile",26,true,0xFF111318));profilePage.addView(tv("Настройки AI, моделей, приватности и фоновой работы.",14,false,0xFF747B88),lp(-1,-2,0,6,0,0));
+        meetingsPage=new LinearLayout(this);meetingsPage.setOrientation(LinearLayout.VERTICAL);pages.addView(meetingsPage);meetingsPage.addView(tv("Встречи",27,true,0xFF111318));meetingsPage.addView(tv("Защищённая история совещаний и AI-итоги",14,false,0xFF747B88),lp(-1,-2,0,3,0,14));meetingResultCard=card(Color.WHITE);meetingResult=tv("Завершённые встречи появятся здесь",14,false,0xFF333841);meetingResultCard.addView(meetingResult);LinearLayout actions=new LinearLayout(this);shareMeetingButton=new Button(this);shareMeetingButton.setText("Поделиться");presentationButton=new Button(this);presentationButton.setText("Презентация");actions.addView(shareMeetingButton,new LinearLayout.LayoutParams(0,dp(48),1));actions.addView(presentationButton,new LinearLayout.LayoutParams(0,dp(48),1));meetingResultCard.addView(actions,lp(-1,-2,0,12,0,0));meetingsPage.addView(meetingResultCard);
 
-        LinearLayout nav=new LinearLayout(this);nav.setOrientation(LinearLayout.HORIZONTAL);nav.setPadding(dp(8),dp(7),dp(8),dp(7));nav.setBackgroundColor(Color.WHITE);navLive=navButton("Live");navMeetings=navButton("Meetings");navLibrary=navButton("Library");navProfile=navButton("Profile");nav.addView(navLive,new LinearLayout.LayoutParams(0,dp(52),1));nav.addView(navMeetings,new LinearLayout.LayoutParams(0,dp(52),1));nav.addView(navLibrary,new LinearLayout.LayoutParams(0,dp(52),1));nav.addView(navProfile,new LinearLayout.LayoutParams(0,dp(52),1));shell.addView(nav);
-        setContentView(shell);
+        libraryPage=new LinearLayout(this);libraryPage.setOrientation(LinearLayout.VERTICAL);pages.addView(libraryPage);libraryPage.addView(tv("Библиотека",27,true,0xFF111318));libraryPage.addView(tv("Транскрипты, переводы и будущие презентации",14,false,0xFF747B88));
+        profilePage=new LinearLayout(this);profilePage.setOrientation(LinearLayout.VERTICAL);pages.addView(profilePage);profilePage.addView(tv("Профиль и безопасность",27,true,0xFF111318));profilePage.addView(tv("Локальное хранение · зашифрованные встречи · AI-модели",14,false,0xFF747B88));
+
+        LinearLayout nav=new LinearLayout(this);nav.setGravity(Gravity.CENTER);nav.setPadding(dp(8),dp(6),dp(8),dp(8));navLive=navButton("Live");navMeetings=navButton("Meetings");navLibrary=navButton("Library");navProfile=navButton("Profile");nav.addView(navLive,new LinearLayout.LayoutParams(0,dp(48),1));nav.addView(navMeetings,new LinearLayout.LayoutParams(0,dp(48),1));nav.addView(navLibrary,new LinearLayout.LayoutParams(0,dp(48),1));nav.addView(navProfile,new LinearLayout.LayoutParams(0,dp(48),1));shell.addView(nav);setContentView(shell);
     }
 
+    private Button navButton(String t){Button b=new Button(this);b.setText(t);b.setAllCaps(false);b.setTextSize(12);return b;}
     private Button modeButton(String t){Button b=new Button(this);b.setText(t);b.setAllCaps(false);b.setTextSize(13);b.setTextColor(0xFF20242B);b.setGravity(Gravity.CENTER);b.setBackground(roundRect(Color.WHITE,18));return b;}
-    private Button navButton(String t){Button b=new Button(this);b.setText(t);b.setAllCaps(false);b.setTextSize(12);b.setTextColor(0xFF20242B);b.setBackground(roundRect(Color.WHITE,16));return b;}
     private TextView chip(String t,int bg,int fg){TextView v=tv(t,10,true,fg);v.setPadding(dp(9),dp(5),dp(9),dp(5));v.setBackground(roundRect(bg,14));return v;}
     private LinearLayout card(int color){LinearLayout l=new LinearLayout(this);l.setOrientation(LinearLayout.VERTICAL);l.setPadding(dp(17),dp(17),dp(17),dp(17));l.setBackground(roundRect(color,22));l.setElevation(dp(1));return l;}
     private TextView tv(String t,int sp,boolean bold,int c){TextView v=new TextView(this);v.setText(t);v.setTextSize(sp);v.setTextColor(c);v.setTypeface(Typeface.DEFAULT,bold?Typeface.BOLD:Typeface.NORMAL);return v;}
