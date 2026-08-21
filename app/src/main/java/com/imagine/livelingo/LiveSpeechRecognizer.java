@@ -19,15 +19,25 @@ public final class LiveSpeechRecognizer implements RecognitionListener {
         recognizer = SpeechRecognizer.createOnDeviceSpeechRecognizer(context); recognizer.setRecognitionListener(this); running = true; listenAgain();
     }
     private void listenAgain() {
-        if (!running || recognizer == null) return; detectedLanguage = null;
+        if (!running || recognizer == null) return;
         Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
         i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
-        i.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true); i.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1); i.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true);
-        i.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 650L);
-        i.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 450L);
+        i.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
+        i.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3);
+        i.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true);
+        i.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 350L);
+        i.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 250L);
+        if (Build.VERSION.SDK_INT >= 33) {
+            i.putExtra(RecognizerIntent.EXTRA_ENABLE_FORMATTING, "latency");
+            i.putExtra(RecognizerIntent.EXTRA_HIDE_PARTIAL_TRAILING_PUNCTUATION, true);
+        }
         if (Build.VERSION.SDK_INT >= 34) {
             i.putExtra(RecognizerIntent.EXTRA_ENABLE_LANGUAGE_DETECTION, true);
-            i.putExtra(RecognizerIntent.EXTRA_ENABLE_LANGUAGE_SWITCH, RecognizerIntent.LANGUAGE_SWITCH_QUICK_RESPONSE);
+            i.putExtra(RecognizerIntent.EXTRA_ENABLE_LANGUAGE_SWITCH, RecognizerIntent.LANGUAGE_SWITCH_BALANCED);
+            ArrayList<String> common = new ArrayList<>();
+            common.add("en-US"); common.add("de-DE"); common.add("fr-FR"); common.add("es-ES"); common.add("it-IT"); common.add("ru-RU"); common.add("uk-UA"); common.add("pl-PL"); common.add("pt-BR"); common.add("tr-TR");
+            i.putStringArrayListExtra(RecognizerIntent.EXTRA_LANGUAGE_DETECTION_ALLOWED_LANGUAGES, common);
+            i.putStringArrayListExtra(RecognizerIntent.EXTRA_LANGUAGE_SWITCH_ALLOWED_LANGUAGES, common);
         }
         recognizer.startListening(i); listener.onStatus("Слушаю…");
     }
@@ -41,7 +51,16 @@ public final class LiveSpeechRecognizer implements RecognitionListener {
     @Override public void onResults(Bundle results) { emit(results, true); delayedRestart(); }
     @Override public void onPartialResults(Bundle partialResults) { emit(partialResults, false); }
     @Override public void onEvent(int eventType, Bundle params) {}
-    @Override public void onLanguageDetection(Bundle results) { if (Build.VERSION.SDK_INT >= 34) { String tag = results.getString(SpeechRecognizer.DETECTED_LANGUAGE); if (tag != null && !tag.isBlank()) detectedLanguage = tag; } }
-    private void emit(Bundle bundle, boolean isFinal) { ArrayList<String> list = bundle.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION); if (list != null && !list.isEmpty()) listener.onText(list.get(0), isFinal, detectedLanguage); }
-    private void delayedRestart() { if (!running) return; new android.os.Handler(context.getMainLooper()).postDelayed(this::listenAgain, 180); }
+    @Override public void onLanguageDetection(Bundle results) {
+        if (Build.VERSION.SDK_INT >= 34) {
+            int confidence = results.getInt(SpeechRecognizer.LANGUAGE_DETECTION_CONFIDENCE_LEVEL, SpeechRecognizer.LANGUAGE_DETECTION_CONFIDENCE_LEVEL_UNKNOWN);
+            String tag = results.getString(SpeechRecognizer.DETECTED_LANGUAGE);
+            if (tag != null && !tag.isBlank() && confidence >= SpeechRecognizer.LANGUAGE_DETECTION_CONFIDENCE_LEVEL_CONFIDENT) detectedLanguage = tag;
+        }
+    }
+    private void emit(Bundle bundle, boolean isFinal) {
+        ArrayList<String> list = bundle.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+        if (list != null && !list.isEmpty()) listener.onText(list.get(0), isFinal, detectedLanguage);
+    }
+    private void delayedRestart() { if (!running) return; new android.os.Handler(context.getMainLooper()).postDelayed(this::listenAgain, 80); }
 }
