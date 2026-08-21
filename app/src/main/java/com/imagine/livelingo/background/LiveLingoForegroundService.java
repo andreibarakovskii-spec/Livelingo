@@ -13,21 +13,27 @@ import androidx.core.app.NotificationCompat;
 import com.imagine.livelingo.MainActivity;
 import com.imagine.livelingo.R;
 
-/** Keeps an active translation/meeting session alive when the UI is backgrounded. */
+/** Owns the active translation/meeting runtime while UI may be backgrounded or recreated. */
 public final class LiveLingoForegroundService extends Service {
     public static final String ACTION_START = "com.imagine.livelingo.action.START_BACKGROUND_SESSION";
     public static final String ACTION_STOP = "com.imagine.livelingo.action.STOP_BACKGROUND_SESSION";
     public static final String EXTRA_MODE = "mode";
+    public static final String EXTRA_INPUT = "input";
+    public static final String EXTRA_TARGET = "target";
     private static final String CHANNEL_ID = "livelingo_live_session";
     private static final int NOTIFICATION_ID = 2201;
     private String mode = "translate";
 
-    public static void start(Context context, String mode) {
+    public static void start(Context context, String mode, String inputLanguage, String targetLanguage) {
         Intent i = new Intent(context, LiveLingoForegroundService.class);
         i.setAction(ACTION_START);
         i.putExtra(EXTRA_MODE, mode);
+        i.putExtra(EXTRA_INPUT, inputLanguage);
+        i.putExtra(EXTRA_TARGET, targetLanguage);
         if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(i); else context.startService(i);
     }
+
+    public static void start(Context context, String mode) { start(context, mode, "auto", "ru"); }
 
     public static void stop(Context context) {
         Intent i = new Intent(context, LiveLingoForegroundService.class);
@@ -41,13 +47,22 @@ public final class LiveLingoForegroundService extends Service {
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
+        SessionRuntime runtime = SessionRuntime.get(this);
         if (intent != null && ACTION_STOP.equals(intent.getAction())) {
+            runtime.stop();
             stopForeground(STOP_FOREGROUND_REMOVE);
             stopSelf();
             return START_NOT_STICKY;
         }
-        if (intent != null) mode = intent.getStringExtra(EXTRA_MODE) == null ? "translate" : intent.getStringExtra(EXTRA_MODE);
+        String input="auto", target="ru";
+        if (intent != null) {
+            mode = intent.getStringExtra(EXTRA_MODE) == null ? "translate" : intent.getStringExtra(EXTRA_MODE);
+            input = intent.getStringExtra(EXTRA_INPUT) == null ? "auto" : intent.getStringExtra(EXTRA_INPUT);
+            target = intent.getStringExtra(EXTRA_TARGET) == null ? "ru" : intent.getStringExtra(EXTRA_TARGET);
+        }
         startForeground(NOTIFICATION_ID, notification());
+        runtime.configure(mode,input,target);
+        runtime.start();
         return START_STICKY;
     }
 
@@ -65,7 +80,7 @@ public final class LiveLingoForegroundService extends Service {
         Intent stopIntent = new Intent(this, LiveLingoForegroundService.class).setAction(ACTION_STOP);
         PendingIntent stop = PendingIntent.getService(this, 1, stopIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         String title = "meeting".equals(mode) ? "LiveLingo · встреча идёт" : "LiveLingo · перевод активен";
-        String text = "Продолжаю слушать и сохранять важное в фоне";
+        String text = "Распознавание и запись продолжаются в фоне";
         return new NotificationCompat.Builder(this, CHANNEL_ID)
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .setContentTitle(title)
