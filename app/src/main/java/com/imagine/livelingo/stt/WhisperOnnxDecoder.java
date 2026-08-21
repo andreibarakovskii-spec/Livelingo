@@ -30,6 +30,7 @@ public final class WhisperOnnxDecoder implements AutoCloseable {
     private static final int DECODER_LAYERS=12;
 
     private static final String[] LANGUAGES={"en","zh","de","es","ru","ko","fr","ja","pt","tr","pl","ca","nl","ar","sv","it","id","hi","fi","vi","he","uk","el","ms","cs","ro","da","hu","ta","no","th","ur","hr","bg","lt","la","mi","ml","cy","sk","te","fa","lv","bn","sr","az","sl","kn","et","mk","br","eu","is","hy","ne","mn","bs","kk","sq","sw","gl","mr","pa","si","km","sn","yo","so","af","oc","ka","be","tg","sd","gu","am","yi","lo","uz","fo","ht","ps","tk","nn","mt","sa","lb","my","bo","tl","mg","as","tt","haw","ln","ha","ba","jw","su","yue"};
+    private static final String[] AUTO_CANDIDATES={"en","ru","de","fr","es","it","pt","pl","tr","uk"};
 
     private final File modelDir;
     private final OrtEnvironment env;
@@ -60,9 +61,7 @@ public final class WhisperOnnxDecoder implements AutoCloseable {
 
     public synchronized Result transcribe(float[] samples,String language) throws Exception {
         if(samples==null||samples.length==0)return new Result("",normalize(language));
-        String lang=normalize(language);
-        if(lang==null)lang="en";
-        int langId=getLanguageId(lang);
+        String requested=normalize(language);
         int maxTokens=Math.min(MAX_TOKENS,Math.max(8,(samples.length/16000)*MAX_TOKENS_PER_SECOND));
 
         try(OnnxTensor audio=OnnxTensor.createTensor(env,FloatBuffer.wrap(samples),new long[]{1,samples.length})){
@@ -74,60 +73,122 @@ public final class WhisperOnnxDecoder implements AutoCloseable {
                     OnnxTensor encoderHidden=(OnnxTensor)encOut.get(0);
                     Map<String,OnnxTensor> cacheInputs=new HashMap<>(); cacheInputs.put("encoder_hidden_states",encoderHidden);
                     try(OrtSession.Result cacheOut=cacheInitSession.run(cacheInputs)){
-                        ArrayList<Integer> tokens=new ArrayList<>();
-                        OrtSession.Result prev=null;
-                        int[] prompt={START_TOKEN_ID,langId,TRANSCRIBE_TOKEN_ID,NO_TIMESTAMPS_TOKEN_ID};
-                        OnnxTensor inputIds=null;
-                        for(int step=0;step<maxTokens+prompt.length;step++){
-                            int tokenIn=step<prompt.length?prompt[step]:(tokens.isEmpty()?NO_TIMESTAMPS_TOKEN_ID:tokens.get(tokens.size()-1));
-                            if(inputIds!=null)inputIds.close();
-                            inputIds=OnnxTensor.createTensor(env,IntBuffer.wrap(new int[]{tokenIn}),new long[]{1,1});
-                            Map<String,OnnxTensor> decInputs=new HashMap<>(); decInputs.put("input_ids",inputIds);
-                            if(prev==null){
-                                OnnxTensor empty=createZeros(new long[]{1,DECODER_LAYERS,0,64});
-                                for(int i=0;i<DECODER_LAYERS;i++){
-                                    decInputs.put("past_key_values."+i+".decoder.key",empty);
-                                    decInputs.put("past_key_values."+i+".decoder.value",empty);
-                                    decInputs.put("past_key_values."+i+".encoder.key",(OnnxTensor)cacheOut.get("present."+i+".encoder.key").orElseThrow());
-                                    decInputs.put("past_key_values."+i+".encoder.value",(OnnxTensor)cacheOut.get("present."+i+".encoder.value").orElseThrow());
-                                }
-                            }else{
-                                for(int i=0;i<DECODER_LAYERS;i++){
-                                    decInputs.put("past_key_values."+i+".decoder.key",(OnnxTensor)prev.get("present."+i+".decoder.key").orElseThrow());
-                                    decInputs.put("past_key_values."+i+".decoder.value",(OnnxTensor)prev.get("present."+i+".decoder.value").orElseThrow());
-                                    decInputs.put("past_key_values."+i+".encoder.key",(OnnxTensor)cacheOut.get("present."+i+".encoder.key").orElseThrow());
-                                    decInputs.put("past_key_values."+i+".encoder.value",(OnnxTensor)cacheOut.get("present."+i+".encoder.value").orElseThrow());
-                                }
-                            }
-                            OrtSession.Result cur=decoderSession.run(decInputs);
-                            if(prev!=null)prev.close(); prev=cur;
-                            if(step<prompt.length-1)continue;
-                            float[][][] logits=(float[][][])((OnnxTensor)cur.get("logits").orElseThrow()).getValue();
-                            int next=argmax(logits[0][0]);
-                            if(next==EOS)break;
-                            tokens.add(next);
-                        }
-                        if(inputIds!=null)inputIds.close();
-                        if(prev!=null)prev.close();
-                        if(tokens.isEmpty())return new Result("",lang);
-                        int[] seq=tokens.stream().mapToInt(Integer::intValue).toArray();
-                        try(OnnxTensor seqTensor=OnnxTensor.createTensor(env,IntBuffer.wrap(seq),new long[]{1,1,seq.length})){
-                            Map<String,OnnxTensor> detokInputs=new LinkedHashMap<>(); detokInputs.put("sequences",seqTensor);
-                            try(OrtSession.Result detokOut=detokenizerSession.run(detokInputs)){
-                                String text=((String[][])detokOut.get(0).getValue())[0][0];
-                                return new Result(clean(text),lang);
-                            }
-                        }
+                        String lang=requested!=null?requested:detectLanguage(cacheOut);
+                        DecodeResult decoded=decodeTokens(cacheOut,lang,maxTokens);
+                        if(decoded.tokens.isEmpty())return new Result("",lang);
+                        return new Result(detokenize(decoded.tokens),lang);
                     }
                 }
             }
         }
     }
 
-    private OnnxTensor createZeros(long[] shape) throws OrtException {
-        long n=1; for(long d:shape)n*=Math.max(0,d); return OnnxTensor.createTensor(env,FloatBuffer.wrap(new float[(int)n]),shape);
+    private String detectLanguage(OrtSession.Result cacheOut) throws Exception {
+        String best="en";
+        double bestScore=Double.NEGATIVE_INFINITY;
+        for(String candidate:AUTO_CANDIDATES){
+            double score=scoreLanguage(cacheOut,candidate);
+            if(score>bestScore){bestScore=score;best=candidate;}
+        }
+        return best;
     }
+
+    private double scoreLanguage(OrtSession.Result cacheOut,String lang) throws Exception {
+        OrtSession.Result prev=null;
+        OnnxTensor inputIds=null;
+        OnnxTensor empty=null;
+        try{
+            int[] prefix={START_TOKEN_ID,getLanguageId(lang)};
+            double score=0;
+            for(int step=0;step<prefix.length;step++){
+                if(inputIds!=null){inputIds.close();inputIds=null;}
+                inputIds=OnnxTensor.createTensor(env,IntBuffer.wrap(new int[]{prefix[step]}),new long[]{1,1});
+                Map<String,OnnxTensor> decInputs=new HashMap<>();decInputs.put("input_ids",inputIds);
+                if(prev==null){
+                    empty=createZeros(new long[]{1,DECODER_LAYERS,0,64});
+                    bindInitialCache(decInputs,cacheOut,empty);
+                }else bindRollingCache(decInputs,cacheOut,prev);
+                OrtSession.Result cur=decoderSession.run(decInputs);
+                if(step==0){
+                    float[][][] logits=(float[][][])((OnnxTensor)cur.get("logits").orElseThrow()).getValue();
+                    int token=getLanguageId(lang);
+                    score=logSoftmaxAt(logits[0][0],token);
+                }
+                if(prev!=null)prev.close();prev=cur;
+            }
+            return score;
+        }finally{
+            if(prev!=null)prev.close();
+            if(inputIds!=null)inputIds.close();
+            if(empty!=null)empty.close();
+        }
+    }
+
+    private DecodeResult decodeTokens(OrtSession.Result cacheOut,String lang,int maxTokens) throws Exception {
+        ArrayList<Integer> tokens=new ArrayList<>();
+        OrtSession.Result prev=null;
+        OnnxTensor inputIds=null;
+        OnnxTensor empty=null;
+        try{
+            int[] prompt={START_TOKEN_ID,getLanguageId(lang),TRANSCRIBE_TOKEN_ID,NO_TIMESTAMPS_TOKEN_ID};
+            for(int step=0;step<maxTokens+prompt.length;step++){
+                int tokenIn=step<prompt.length?prompt[step]:(tokens.isEmpty()?NO_TIMESTAMPS_TOKEN_ID:tokens.get(tokens.size()-1));
+                if(inputIds!=null){inputIds.close();inputIds=null;}
+                inputIds=OnnxTensor.createTensor(env,IntBuffer.wrap(new int[]{tokenIn}),new long[]{1,1});
+                Map<String,OnnxTensor> decInputs=new HashMap<>();decInputs.put("input_ids",inputIds);
+                if(prev==null){
+                    empty=createZeros(new long[]{1,DECODER_LAYERS,0,64});
+                    bindInitialCache(decInputs,cacheOut,empty);
+                }else bindRollingCache(decInputs,cacheOut,prev);
+                OrtSession.Result cur=decoderSession.run(decInputs);
+                if(prev!=null)prev.close();prev=cur;
+                if(step<prompt.length-1)continue;
+                float[][][] logits=(float[][][])((OnnxTensor)cur.get("logits").orElseThrow()).getValue();
+                int next=argmax(logits[0][0]);
+                if(next==EOS)break;
+                tokens.add(next);
+            }
+            return new DecodeResult(tokens);
+        }finally{
+            if(prev!=null)prev.close();
+            if(inputIds!=null)inputIds.close();
+            if(empty!=null)empty.close();
+        }
+    }
+
+    private void bindInitialCache(Map<String,OnnxTensor> decInputs,OrtSession.Result cacheOut,OnnxTensor empty){
+        for(int i=0;i<DECODER_LAYERS;i++){
+            decInputs.put("past_key_values."+i+".decoder.key",empty);
+            decInputs.put("past_key_values."+i+".decoder.value",empty);
+            decInputs.put("past_key_values."+i+".encoder.key",(OnnxTensor)cacheOut.get("present."+i+".encoder.key").orElseThrow());
+            decInputs.put("past_key_values."+i+".encoder.value",(OnnxTensor)cacheOut.get("present."+i+".encoder.value").orElseThrow());
+        }
+    }
+
+    private void bindRollingCache(Map<String,OnnxTensor> decInputs,OrtSession.Result cacheOut,OrtSession.Result prev){
+        for(int i=0;i<DECODER_LAYERS;i++){
+            decInputs.put("past_key_values."+i+".decoder.key",(OnnxTensor)prev.get("present."+i+".decoder.key").orElseThrow());
+            decInputs.put("past_key_values."+i+".decoder.value",(OnnxTensor)prev.get("present."+i+".decoder.value").orElseThrow());
+            decInputs.put("past_key_values."+i+".encoder.key",(OnnxTensor)cacheOut.get("present."+i+".encoder.key").orElseThrow());
+            decInputs.put("past_key_values."+i+".encoder.value",(OnnxTensor)cacheOut.get("present."+i+".encoder.value").orElseThrow());
+        }
+    }
+
+    private String detokenize(ArrayList<Integer> tokens) throws Exception {
+        int[] seq=tokens.stream().mapToInt(Integer::intValue).toArray();
+        try(OnnxTensor seqTensor=OnnxTensor.createTensor(env,IntBuffer.wrap(seq),new long[]{1,1,seq.length})){
+            Map<String,OnnxTensor> detokInputs=new LinkedHashMap<>();detokInputs.put("sequences",seqTensor);
+            try(OrtSession.Result detokOut=detokenizerSession.run(detokInputs)){
+                String text=((String[][])detokOut.get(0).getValue())[0][0];
+                return clean(text);
+            }
+        }
+    }
+
+    private static final class DecodeResult { final ArrayList<Integer> tokens; DecodeResult(ArrayList<Integer> tokens){this.tokens=tokens;} }
+    private OnnxTensor createZeros(long[] shape) throws OrtException { long n=1;for(long d:shape)n*=Math.max(0,d);return OnnxTensor.createTensor(env,FloatBuffer.wrap(new float[(int)n]),shape); }
     private static int argmax(float[] a){int idx=0;for(int i=1;i<a.length;i++)if(a[i]>a[idx])idx=i;return idx;}
+    private static double logSoftmaxAt(float[] logits,int index){float max=logits[0];for(int i=1;i<logits.length;i++)if(logits[i]>max)max=logits[i];double sum=0;for(float v:logits)sum+=Math.exp(v-max);return (logits[index]-max)-Math.log(sum);}
     private static String clean(String s){if(s==null)return "";String x=s.replaceAll("<\\|[^>]*\\|>\\s*","").trim().replace("...","");if(x.length()>1&&Character.isLowerCase(x.charAt(0)))x=Character.toUpperCase(x.charAt(0))+x.substring(1);return x.trim();}
     private static int getLanguageId(String lang){for(int i=0;i<LANGUAGES.length;i++)if(LANGUAGES[i].equals(lang))return 50259+i;return 50259;}
     private static String normalize(String language){return language==null||language.isBlank()||"auto".equals(language)?null:language.split("[-_]")[0].toLowerCase();}
