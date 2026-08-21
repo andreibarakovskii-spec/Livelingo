@@ -15,10 +15,19 @@ public class MainActivity extends Activity implements LiveSpeechRecognizer.Liste
         trace.log(isFinal?"UI_FINAL_TEXT":"UI_PARTIAL_TEXT",text+" | lang="+lang); sourceText.setText(text);
         String sourceHint="auto".equals(manualInput)?lang:manualInput;
         if("auto".equals(manualInput)&&lang!=null)detected.setText("Определён язык: "+LanguageCatalog.displayForCode(lang));
-        if(pendingTranslation!=null)debounce.removeCallbacks(pendingTranslation);
         final long seq=++translationSeq; final String textSnapshot=text; final String hintSnapshot=sourceHint; final boolean finalSnapshot=isFinal;
-        pendingTranslation=()->{trace.log("TRANSLATE_REQUEST","seq="+seq+" hint="+hintSnapshot+" final="+finalSnapshot+" text="+textSnapshot);translator.translateAuto(textSnapshot,hintSnapshot,new TranslationEngine.Callback(){public void onTranslated(String src,String tr){trace.log("TRANSLATE_OK","seq="+seq+" src="+src+" out="+tr);if(seq!=translationSeq){trace.log("TRANSLATE_DROP","stale seq="+seq+" current="+translationSeq);return;}runOnUiThread(()->{if("auto".equals(manualInput))detected.setText("Определён язык: "+LanguageCatalog.displayForCode(src));translatedText.setText(tr);String delta=spokenDiff.acceptPartial(tr,finalSnapshot);trace.log("TTS_DELTA",delta);if(!delta.isBlank())speaker.speak(delta, finalSnapshot);if(finalSnapshot){String tail=spokenDiff.flushFinal(tr);trace.log("TTS_TAIL",tail);if(!tail.isBlank())speaker.speak(tail,true);spokenDiff.reset();}status.setText(finalSnapshot?"Слушаю дальше…":"Перевожу по ходу речи…");});}public void onError(String m){trace.log("TRANSLATE_ERROR","seq="+seq+" "+m);if(seq!=translationSeq)return;runOnUiThread(()->status.setText(m));}});};
-        debounce.postDelayed(pendingTranslation,isFinal?0:180);
+        if(finalSnapshot){
+            if(pendingTranslation!=null)debounce.removeCallbacks(pendingTranslation);
+            runTranslation(seq,textSnapshot,hintSnapshot,true);
+        } else {
+            if(pendingTranslation!=null)debounce.removeCallbacks(pendingTranslation);
+            pendingTranslation=()->runTranslation(seq,textSnapshot,hintSnapshot,false);
+            debounce.postDelayed(pendingTranslation,120);
+        }
+    }
+    private void runTranslation(long seq,String textSnapshot,String hintSnapshot,boolean finalSnapshot){
+        trace.log("TRANSLATE_REQUEST","seq="+seq+" hint="+hintSnapshot+" final="+finalSnapshot+" text="+textSnapshot);
+        translator.translateAuto(textSnapshot,hintSnapshot,new TranslationEngine.Callback(){public void onTranslated(String src,String tr){trace.log("TRANSLATE_OK","seq="+seq+" src="+src+" out="+tr);runOnUiThread(()->{if("auto".equals(manualInput))detected.setText("Определён язык: "+LanguageCatalog.displayForCode(src));translatedText.setText(tr);String delta=spokenDiff.acceptPartial(tr,finalSnapshot);trace.log("TTS_DELTA",delta);if(!delta.isBlank())speaker.speak(delta, finalSnapshot);if(finalSnapshot){String tail=spokenDiff.flushFinal(tr);trace.log("TTS_TAIL",tail);if(!tail.isBlank())speaker.speak(tail,true);spokenDiff.reset();}status.setText(finalSnapshot?"Слушаю дальше…":"Перевожу по ходу речи…");});}public void onError(String m){trace.log("TRANSLATE_ERROR","seq="+seq+" "+m);runOnUiThread(()->status.setText(m));}});
     }
     @Override public void onStatus(String s){trace.log("SPEECH_STATUS",s);runOnUiThread(()->status.setText(s));} @Override public void onError(String e){trace.log("SPEECH_ERROR",e);runOnUiThread(()->status.setText(e));}
     private void shareTrace(){ try{File f=trace.file();Uri uri=FileProvider.getUriForFile(this,getPackageName()+".fileprovider",f);Intent i=new Intent(Intent.ACTION_SEND);i.setType("text/plain");i.putExtra(Intent.EXTRA_STREAM,uri);i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);startActivity(Intent.createChooser(i,"Отправить журнал LiveLingo"));}catch(Exception e){Toast.makeText(this,"Не удалось открыть журнал: "+e.getMessage(),Toast.LENGTH_LONG).show();} }
