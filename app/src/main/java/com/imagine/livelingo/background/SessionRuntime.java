@@ -2,6 +2,7 @@ package com.imagine.livelingo.background;
 
 import android.content.Context;
 import com.imagine.livelingo.TranslationEngine;
+import com.imagine.livelingo.business.Insight;
 import com.imagine.livelingo.business.MeetingInsightEngine;
 import com.imagine.livelingo.business.MeetingReportBuilder;
 import com.imagine.livelingo.business.MeetingSessionStore;
@@ -29,8 +30,8 @@ public final class SessionRuntime implements SttEngine.Listener {
         public final String detectedLanguage;
         public final String sttEngine;
         public final boolean whisperAvailable;
-        public final List<MeetingInsightEngine.Insight> insights;
-        Snapshot(boolean active,String mode,String status,String sourceText,String translatedText,String detectedLanguage,String sttEngine,boolean whisperAvailable,List<MeetingInsightEngine.Insight> insights){
+        public final List<Insight> insights;
+        Snapshot(boolean active,String mode,String status,String sourceText,String translatedText,String detectedLanguage,String sttEngine,boolean whisperAvailable,List<Insight> insights){
             this.active=active; this.mode=mode; this.status=status; this.sourceText=sourceText; this.translatedText=translatedText; this.detectedLanguage=detectedLanguage; this.sttEngine=sttEngine; this.whisperAvailable=whisperAvailable; this.insights=insights;
         }
     }
@@ -48,7 +49,7 @@ public final class SessionRuntime implements SttEngine.Listener {
     private final TranslationEngine translator;
     private final MeetingSessionStore meetingStore=new MeetingSessionStore();
     private final MeetingInsightEngine meetingEngine=new MeetingInsightEngine();
-    private final List<MeetingInsightEngine.Insight> insights=new ArrayList<>();
+    private final List<Insight> insights=new ArrayList<>();
     private final CopyOnWriteArrayList<Observer> observers=new CopyOnWriteArrayList<>();
     private boolean active;
     private String mode="translate";
@@ -123,7 +124,9 @@ public final class SessionRuntime implements SttEngine.Listener {
 
     private void handleText(String text,boolean isFinal,String lang){
         synchronized(this){ sourceText=text; detectedLanguage=lang; }
-        if("meeting".equals(mode) && isFinal){ synchronized(this){ insights.addAll(meetingEngine.extract(text)); } }
+        if("meeting".equals(mode) && isFinal){
+            synchronized(this){ insights.addAll(meetingEngine.analyze(text,meetingStore.durationMs())); }
+        }
         final String hint="auto".equals(inputLanguage)?lang:inputLanguage;
         translator.translateAuto(text,hint,new TranslationEngine.Callback(){
             @Override public void onTranslated(String sourceLanguage,String translated){
