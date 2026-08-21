@@ -82,7 +82,7 @@ public final class LiveLingoForegroundService extends Service {
         String title = "meeting".equals(mode) ? "LiveLingo · встреча идёт" : "LiveLingo · перевод активен";
         String text = "Распознавание и запись продолжаются в фоне";
         return new NotificationCompat.Builder(this, CHANNEL_ID)
-                .setSmallIcon(R.mipmap.ic_launcher)
+                .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(title)
                 .setContentText(text)
                 .setOngoing(true)
