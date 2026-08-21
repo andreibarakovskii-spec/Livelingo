@@ -14,6 +14,12 @@ public final class SpokenDiff {
         if (common < spoken.size() || stable.size() <= spoken.size()) return "";
         List<String> delta = stable.subList(spoken.size(), stable.size()); spoken.addAll(delta); return String.join(" ", delta).trim();
     }
+    public synchronized String flushFinal(String translation) {
+        List<String> words = tokenize(translation); int common = 0;
+        while (common < spoken.size() && common < words.size() && spoken.get(common).equalsIgnoreCase(words.get(common))) common++;
+        if (common < spoken.size() || words.size() <= spoken.size()) return "";
+        List<String> delta = words.subList(spoken.size(), words.size()); spoken.addAll(delta); return String.join(" ", delta).trim();
+    }
     public synchronized void reset() { spoken.clear(); }
     public synchronized int spokenWordCount() { return spoken.size(); }
     private static List<String> tokenize(String text) {
