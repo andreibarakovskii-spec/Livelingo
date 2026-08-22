@@ -23,9 +23,10 @@ public final class StreamingHypothesisStabilizer {
 
         if(stablePrefix.isEmpty()) return "";
 
-        // When the entire previous hypothesis is merely extended, keep its last word
-        // provisional for one more decode. Whisper often revises exactly that tail word.
-        if(previousWasExactPrefix && wordCount(stablePrefix)>1){
+        // On the very first stable extension, keep one trailing word provisional.
+        // After we have already emitted a stable prefix, a further exact extension
+        // confirms the rest of the previous hypothesis and may advance normally.
+        if(previousWasExactPrefix && lastEmitted.isEmpty() && wordCount(stablePrefix)>1){
             stablePrefix=dropLastWord(stablePrefix);
         }
 
