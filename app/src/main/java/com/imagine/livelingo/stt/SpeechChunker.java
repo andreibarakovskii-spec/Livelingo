@@ -7,18 +7,20 @@ import java.util.List;
 public final class SpeechChunker {
     public interface Listener { void onChunk(float[] samples, boolean finalChunk); }
     private final Listener listener;
+    private final Runnable speechStartListener;
     private final List<Float> speech=new ArrayList<>();
     private static final int SAMPLE_RATE=16000;
-    private static final int PRE_ROLL=SAMPLE_RATE*30/100; // 300 ms before detected speech
-    private static final int END_SILENCE=SAMPLE_RATE*65/100; // 650 ms natural pause
-    private static final int MIN_SPEECH=SAMPLE_RATE*30/100; // 300 ms actual voiced audio
-    private static final int PARTIAL_INTERVAL=SAMPLE_RATE*11/10; // 1.1 s
+    private static final int PRE_ROLL=SAMPLE_RATE*30/100;
+    private static final int END_SILENCE=SAMPLE_RATE*65/100;
+    private static final int MIN_SPEECH=SAMPLE_RATE*30/100;
+    private static final int PARTIAL_INTERVAL=SAMPLE_RATE*11/10;
     private final float[] preRoll=new float[PRE_ROLL];
     private int preWrite,preCount,silentSamples,voicedSamples,sincePartial;
     private boolean speaking;
     private float noiseFloor=0.008f;
 
-    public SpeechChunker(Listener listener){this.listener=listener;}
+    public SpeechChunker(Listener listener){this(listener,null);}
+    public SpeechChunker(Listener listener,Runnable speechStartListener){this.listener=listener;this.speechStartListener=speechStartListener;}
 
     public synchronized void accept(float[] pcm){
         if(pcm==null||pcm.length==0)return;
@@ -32,6 +34,7 @@ public final class SpeechChunker {
             if(voice){
                 speaking=true;silentSamples=0;voicedSamples=pcm.length;sincePartial=pcm.length;
                 appendPreRoll();clearPreRoll();append(pcm);
+                if(speechStartListener!=null)speechStartListener.run();
             }else pushPreRoll(pcm);
         }else if(voice){
             silentSamples=0;voicedSamples+=pcm.length;append(pcm);sincePartial+=pcm.length;
@@ -44,7 +47,6 @@ public final class SpeechChunker {
     }
 
     public synchronized void flush(){if(speaking&&voicedSamples>=MIN_SPEECH)listener.onChunk(copy(),true);resetSpeech();clearPreRoll();}
-
     private void pushPreRoll(float[] pcm){for(float v:pcm){preRoll[preWrite]=v;preWrite=(preWrite+1)%preRoll.length;if(preCount<preRoll.length)preCount++;}}
     private void appendPreRoll(){if(preCount==0)return;int start=(preWrite-preCount+preRoll.length)%preRoll.length;for(int i=0;i<preCount;i++)speech.add(preRoll[(start+i)%preRoll.length]);}
     private void clearPreRoll(){preWrite=0;preCount=0;}
