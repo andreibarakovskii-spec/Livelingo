@@ -45,7 +45,7 @@ public final class SessionRuntime implements SttEngine.Listener {
         neuralSpeaker=new NeuralVoiceManager(context,new NeuralVoiceManager.Listener(){
             @Override public void onStatus(String s){synchronized(SessionRuntime.this){if(!active||!"meeting".equals(mode))status=s;}notifyState();}
             @Override public void onDownloadProgress(int p){synchronized(SessionRuntime.this){status="Kokoro · "+p+"%";}notifyState();}
-        },(text,finalChunk,profile)->systemSpeaker.speak(text,finalChunk,targetLanguage,bandFromInt(profile)));
+        },(text,language,finalChunk,profile)->systemSpeaker.speak(text,finalChunk,language,bandFromInt(profile)));
         systemSpeech=new SystemSttEngine(context,this);whisperSpeech=new WhisperOnnxEngine(context,this);selectBestEngine();
     }
     private void selectBestEngine(){if(whisperSpeech.isAvailable()){speech=whisperSpeech;sttEngineName="whisper";}else{speech=systemSpeech;sttEngineName="system";}speech.setInputLanguage("conversation".equals(mode)?"auto":inputLanguage);}
