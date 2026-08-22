@@ -10,10 +10,13 @@ import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.*;
 import androidx.core.content.FileProvider;
+import com.imagine.livelingo.ai.SecureApiKeyStore;
+import com.imagine.livelingo.ai.XaiMeetingAnalyzer;
 import com.imagine.livelingo.background.LiveLingoForegroundService;
 import com.imagine.livelingo.background.SessionRuntime;
 import com.imagine.livelingo.business.Insight;
@@ -30,17 +33,19 @@ public class MainActivity extends Activity implements SessionRuntime.Observer {
     private static final int REQ=7, REQ_UNLOCK_MEETING=41;
     private static final int BG=0xFFF4F5F7, INK=0xFF12151B, MUTED=0xFF747B88, BLUE=0xFF3157D5, CARD=0xFFFFFFFF, DARK=0xFF111318;
 
-    private TextView status,sourceText,translatedText,detected,headset,modeTitle,modeSubtitle,meetingInsights,meetingResult,importantResults,presentationResult,inputLabel,targetLabel,speakerBadge,neuralVoiceStatus,voiceHint;
-    private EditText importantSearch;
-    private Button mainButton,debugButton,modeTranslate,modeConversation,modeMeeting,navLive,navMeetings,navPresentation,navLibrary,navProfile,shareMeetingButton,presentationButton,searchImportantButton,generatePresentationButton,sharePresentationButton,downloadVoiceButton,voiceOffButton,voiceAiButton,voiceSystemButton;
+    private TextView status,sourceText,translatedText,detected,headset,modeTitle,modeSubtitle,meetingInsights,meetingResult,importantResults,presentationResult,inputLabel,targetLabel,speakerBadge,neuralVoiceStatus,voiceHint,xaiStatus,aiAnalysisResult;
+    private EditText importantSearch,xaiKeyInput;
+    private Button mainButton,debugButton,modeTranslate,modeConversation,modeMeeting,navLive,navMeetings,navPresentation,navLibrary,navProfile,shareMeetingButton,presentationButton,searchImportantButton,generatePresentationButton,sharePresentationButton,downloadVoiceButton,voiceOffButton,voiceAiButton,voiceSystemButton,saveXaiButton,clearXaiButton,aiAnalyzeButton;
     private Spinner inputSpinner,targetSpinner;
     private LinearLayout livePage,meetingsPage,presentationPage,libraryPage,profilePage,meetingResultCard,meetingHistoryHost,voiceCard;
-    private boolean active;
-    private String manualInput="auto",currentMode="translate",openedMeetingId,openedMeetingPayload="";
+    private boolean active,aiBusy;
+    private String manualInput="auto",currentMode="translate",openedMeetingId,openedMeetingPayload="",lastAiAnalysis="";
     private DebugTrace trace;
     private MeetingHistoryController historyController;
     private MeetingHistoryUi historyUi;
     private SessionRuntime runtime;
+    private SecureApiKeyStore apiKeyStore;
+    private XaiMeetingAnalyzer xaiAnalyzer;
 
     @Override protected void onCreate(Bundle b){
         super.onCreate(b);
@@ -49,11 +54,13 @@ public class MainActivity extends Activity implements SessionRuntime.Observer {
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
         buildUi();
         runtime=SessionRuntime.get(this);
+        apiKeyStore=new SecureApiKeyStore(this);
+        xaiAnalyzer=new XaiMeetingAnalyzer();
         historyController=new MeetingHistoryController(this,new MeetingHistoryController.Listener(){
             public void onList(List<com.imagine.livelingo.security.MeetingVaultRepository.Item> items){historyUi.render(items);}
-            public void onMeeting(EncryptedMeetingVault.StoredMeeting meeting){openedMeetingId=meeting.id;openedMeetingPayload=meeting.payload;meetingResult.setText(meeting.payload);meetingResultCard.setVisibility(View.VISIBLE);importantResults.setText(MeetingContentTools.searchImportant(meeting.payload,""));SecureScreen.protect(MainActivity.this);}
+            public void onMeeting(EncryptedMeetingVault.StoredMeeting meeting){openedMeetingId=meeting.id;openedMeetingPayload=meeting.payload;lastAiAnalysis="";meetingResult.setText(meeting.payload);meetingResultCard.setVisibility(View.VISIBLE);importantResults.setText(MeetingContentTools.searchImportant(meeting.payload,""));aiAnalysisResult.setText("Нажмите «Grok анализ», чтобы получить смысловой разбор встречи");SecureScreen.protect(MainActivity.this);}
             public void onError(String message){Toast.makeText(MainActivity.this,message,Toast.LENGTH_LONG).show();}
-            public void onDeleted(){openedMeetingId=null;openedMeetingPayload="";meetingResult.setText("Выберите сохранённую встречу");meetingResultCard.setVisibility(View.GONE);importantResults.setText("Откройте встречу, чтобы искать важные моменты");SecureScreen.unprotect(MainActivity.this);}
+            public void onDeleted(){openedMeetingId=null;openedMeetingPayload="";lastAiAnalysis="";meetingResult.setText("Выберите сохранённую встречу");meetingResultCard.setVisibility(View.GONE);importantResults.setText("Откройте встречу, чтобы искать важные моменты");aiAnalysisResult.setText("AI-анализ появится после открытия встречи");SecureScreen.unprotect(MainActivity.this);}
         });
         historyUi=new MeetingHistoryUi(this,meetingHistoryHost,new MeetingHistoryUi.Actions(){
             public void open(String id){if(!historyController.requestOpen(id,REQ_UNLOCK_MEETING))Toast.makeText(MainActivity.this,"На устройстве не настроена защита экрана",Toast.LENGTH_LONG).show();}
@@ -61,6 +68,7 @@ public class MainActivity extends Activity implements SessionRuntime.Observer {
             public void wipeAll(){historyController.wipeAll();}
         });
         wireActions();
+        updateAiStatus();
         requestPermissionsIfNeeded();
         headset.setText(BluetoothRouter.routeToHeadset(this));
         targetSpinner.setSelection(indexOfTarget("Русский"));
@@ -81,14 +89,17 @@ public class MainActivity extends Activity implements SessionRuntime.Observer {
         navMeetings.setOnClickListener(v->{showPage("meetings");historyController.refresh();});
         navPresentation.setOnClickListener(v->showPage("presentation"));
         navLibrary.setOnClickListener(v->showPage("library"));
-        navProfile.setOnClickListener(v->showPage("profile"));
+        navProfile.setOnClickListener(v->{showPage("profile");updateAiStatus();});
         shareMeetingButton.setOnClickListener(v->shareMeeting());
-        presentationButton.setOnClickListener(v->{generatePresentation();showPage("presentation");});
+        presentationButton.setOnClickListener(v->{showPage("presentation");generatePresentation();});
+        aiAnalyzeButton.setOnClickListener(v->runGrokAnalysis(false));
         generatePresentationButton.setOnClickListener(v->generatePresentation());
         sharePresentationButton.setOnClickListener(v->shareText(presentationResult.getText().toString(),"Поделиться презентацией"));
         searchImportantButton.setOnClickListener(v->runImportantSearch());
         importantSearch.setOnEditorActionListener((v,a,e)->{runImportantSearch();return true;});
         downloadVoiceButton.setOnClickListener(v->{downloadVoiceButton.setEnabled(false);runtime.downloadNeuralVoice();});
+        saveXaiButton.setOnClickListener(v->saveXaiKey());
+        clearXaiButton.setOnClickListener(v->{apiKeyStore.clear();xaiKeyInput.setText("");updateAiStatus();Toast.makeText(this,"xAI API-ключ удалён",Toast.LENGTH_SHORT).show();});
         inputSpinner.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener(){
             public void onItemSelected(android.widget.AdapterView<?> p,View v,int pos,long id){manualInput=LanguageCatalog.inputCodeForDisplay((String)inputSpinner.getSelectedItem());updateLanguageLabels();if(active)runtime.configure(currentMode,manualInput,currentTarget());}
             public void onNothingSelected(android.widget.AdapterView<?> p){}
@@ -97,6 +108,19 @@ public class MainActivity extends Activity implements SessionRuntime.Observer {
             public void onItemSelected(android.widget.AdapterView<?> p,View v,int pos,long id){updateLanguageLabels();if(active)runtime.configure(currentMode,manualInput,currentTarget());}
             public void onNothingSelected(android.widget.AdapterView<?> p){}
         });
+    }
+
+    private void saveXaiKey(){
+        String key=xaiKeyInput.getText().toString().trim();
+        if(key.isBlank()){Toast.makeText(this,"Вставьте xAI API-ключ",Toast.LENGTH_SHORT).show();return;}
+        try{apiKeyStore.save(key);xaiKeyInput.setText("");updateAiStatus();Toast.makeText(this,"Ключ зашифрован Android Keystore",Toast.LENGTH_SHORT).show();}
+        catch(Exception e){Toast.makeText(this,e.getMessage(),Toast.LENGTH_LONG).show();}
+    }
+    private void updateAiStatus(){
+        if(xaiStatus==null||apiKeyStore==null)return;
+        boolean connected=apiKeyStore.hasKey();
+        xaiStatus.setText(connected?"Grok 4.6 подключён · ключ хранится зашифрованно":"Grok не подключён · локальный анализ остаётся доступен");
+        xaiKeyInput.setHint(connected?"Ключ уже сохранён · вставьте новый для замены":"xai-…");
     }
 
     @Override protected void onStart(){super.onStart();runtime.addObserver(this);}
@@ -117,7 +141,7 @@ public class MainActivity extends Activity implements SessionRuntime.Observer {
     });}
 
     @Override public void onFinalizedMeeting(String encryptedId,String report){runOnUiThread(()->{
-        openedMeetingId=encryptedId;openedMeetingPayload=report;meetingResult.setText(report);meetingResultCard.setVisibility(View.VISIBLE);importantResults.setText(MeetingContentTools.searchImportant(report,""));historyController.refresh();showPage("meetings");Toast.makeText(this,"Встреча сохранена в защищённое хранилище",Toast.LENGTH_SHORT).show();
+        openedMeetingId=encryptedId;openedMeetingPayload=report;lastAiAnalysis="";meetingResult.setText(report);meetingResultCard.setVisibility(View.VISIBLE);importantResults.setText(MeetingContentTools.searchImportant(report,""));aiAnalysisResult.setText("Встреча сохранена. Можно запустить Grok-анализ.");historyController.refresh();showPage("meetings");Toast.makeText(this,"Встреча сохранена в защищённое хранилище",Toast.LENGTH_SHORT).show();
     });}
 
     private void renderVoiceMode(String mode,boolean neuralInstalled){
@@ -136,7 +160,26 @@ public class MainActivity extends Activity implements SessionRuntime.Observer {
         meetingInsights.setText(sb.toString());
     }
     private void runImportantSearch(){if(openedMeetingPayload.isBlank()){importantResults.setText("Сначала откройте встречу");return;}importantResults.setText(MeetingContentTools.searchImportant(openedMeetingPayload,importantSearch.getText().toString()));}
-    private void generatePresentation(){if(openedMeetingPayload.isBlank()){presentationResult.setText("Сначала откройте встречу во вкладке Meet");return;}presentationResult.setText(MeetingContentTools.buildPresentationDraft(openedMeetingPayload));SecureScreen.protect(this);}
+
+    private void generatePresentation(){
+        if(openedMeetingPayload.isBlank()){presentationResult.setText("Сначала откройте встречу во вкладке Meet");return;}
+        if(!lastAiAnalysis.isBlank()){presentationResult.setText(lastAiAnalysis);SecureScreen.protect(this);return;}
+        if(apiKeyStore.hasKey()){runGrokAnalysis(true);return;}
+        presentationResult.setText(MeetingContentTools.buildPresentationDraft(openedMeetingPayload)+"\n\nЛокальный режим · подключите Grok во вкладке AI для адаптивной структуры по смыслу встречи.");SecureScreen.protect(this);
+    }
+
+    private void runGrokAnalysis(boolean goToSlides){
+        if(aiBusy)return;
+        if(openedMeetingPayload.isBlank()){Toast.makeText(this,"Сначала откройте встречу",Toast.LENGTH_SHORT).show();return;}
+        String key=apiKeyStore.load();
+        if(key.isBlank()){Toast.makeText(this,"Добавьте xAI API-ключ во вкладке AI",Toast.LENGTH_LONG).show();if(goToSlides)presentationResult.setText(MeetingContentTools.buildPresentationDraft(openedMeetingPayload));return;}
+        aiBusy=true;setAiButtonsEnabled(false);aiAnalysisResult.setText("Grok 4.6 анализирует встречу…");presentationResult.setText("Grok 4.6 анализирует содержание и строит структуру слайдов…");
+        xaiAnalyzer.analyze(openedMeetingPayload,key,new XaiMeetingAnalyzer.Callback(){
+            @Override public void onSuccess(String result){aiBusy=false;lastAiAnalysis=result;setAiButtonsEnabled(true);aiAnalysisResult.setText(result);presentationResult.setText(result);if(goToSlides)showPage("presentation");SecureScreen.protect(MainActivity.this);}
+            @Override public void onError(String message){aiBusy=false;setAiButtonsEnabled(true);String local=MeetingContentTools.buildPresentationDraft(openedMeetingPayload);aiAnalysisResult.setText("Grok: "+message+"\n\nЛокальный анализ:\n"+MeetingContentTools.searchImportant(openedMeetingPayload,""));presentationResult.setText(local+"\n\nGrok недоступен: "+message);Toast.makeText(MainActivity.this,message,Toast.LENGTH_LONG).show();}
+        });
+    }
+    private void setAiButtonsEnabled(boolean enabled){aiAnalyzeButton.setEnabled(enabled);generatePresentationButton.setEnabled(enabled);presentationButton.setEnabled(enabled);}
 
     private void showPage(String page){
         livePage.setVisibility("live".equals(page)?View.VISIBLE:View.GONE);meetingsPage.setVisibility("meetings".equals(page)?View.VISIBLE:View.GONE);presentationPage.setVisibility("presentation".equals(page)?View.VISIBLE:View.GONE);libraryPage.setVisibility("library".equals(page)?View.VISIBLE:View.GONE);profilePage.setVisibility("profile".equals(page)?View.VISIBLE:View.GONE);
@@ -164,7 +207,7 @@ public class MainActivity extends Activity implements SessionRuntime.Observer {
     private void shareMeeting(){if(openedMeetingPayload.isBlank()||openedMeetingId==null){Toast.makeText(this,"Сначала откройте защищённую встречу",Toast.LENGTH_SHORT).show();return;}shareText(openedMeetingPayload,"Поделиться итогами встречи");}
     private void shareText(String text,String title){if(text==null||text.isBlank()){Toast.makeText(this,"Нет данных",Toast.LENGTH_SHORT).show();return;}Intent i=new Intent(Intent.ACTION_SEND);i.setType("text/plain");i.putExtra(Intent.EXTRA_TEXT,text);startActivity(Intent.createChooser(i,title));}
     private void shareTrace(){try{File f=trace.file();Uri uri=FileProvider.getUriForFile(this,getPackageName()+".fileprovider",f);Intent i=new Intent(Intent.ACTION_SEND);i.setType("text/plain");i.putExtra(Intent.EXTRA_STREAM,uri);i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);startActivity(Intent.createChooser(i,"Отправить журнал LiveLingo"));}catch(Exception e){Toast.makeText(this,"Журнал: "+e.getMessage(),Toast.LENGTH_LONG).show();}}
-    @Override protected void onDestroy(){SecureScreen.unprotect(this);super.onDestroy();}
+    @Override protected void onDestroy(){SecureScreen.unprotect(this);if(xaiAnalyzer!=null)xaiAnalyzer.close();super.onDestroy();}
 
     private void buildUi(){
         LinearLayout shell=new LinearLayout(this);shell.setOrientation(LinearLayout.VERTICAL);shell.setBackgroundColor(BG);
@@ -182,12 +225,16 @@ public class MainActivity extends Activity implements SessionRuntime.Observer {
         LinearLayout live=card(CARD);LinearLayout lh=new LinearLayout(this);lh.setGravity(Gravity.CENTER_VERTICAL);lh.addView(chip("LIVE",0xFFFFECEC,0xFFE24A4A));lh.addView(tv("   ON-DEVICE",10,true,0xFF979EAA));live.addView(lh);live.addView(label("ОРИГИНАЛ"),lp(-1,-2,0,15,0,0));sourceText=tv("Здесь появится речь собеседника",17,false,0xFF30343B);live.addView(sourceText,lp(-1,-2,0,6,0,16));View div=new View(this);div.setBackgroundColor(0xFFE9EBEF);live.addView(div,new LinearLayout.LayoutParams(-1,dp(1)));live.addView(label("ПЕРЕВОД"),lp(-1,-2,0,15,0,0));translatedText=tv("Здесь появится перевод",22,true,INK);live.addView(translatedText,lp(-1,-2,0,6,0,0));livePage.addView(live);
         meetingInsights=tv("Решения, задачи, риски и вопросы появятся здесь автоматически.",14,false,0xFF3E4652);meetingInsights.setBackground(roundRect(0xFFFFF8E5,18));meetingInsights.setPadding(dp(16),dp(14),dp(16),dp(14));livePage.addView(meetingInsights,lp(-1,-2,0,12,0,0));debugButton=secondaryButton("Диагностика");livePage.addView(debugButton,lp(-1,dp(46),0,12,0,0));
 
-        meetingsPage=new LinearLayout(this);meetingsPage.setOrientation(LinearLayout.VERTICAL);pages.addView(meetingsPage);sectionTitle(meetingsPage,"Meetings","Защищённая история · поиск · AI-итоги");meetingHistoryHost=new LinearLayout(this);meetingHistoryHost.setOrientation(LinearLayout.VERTICAL);meetingsPage.addView(meetingHistoryHost);LinearLayout searchCard=card(CARD);searchCard.addView(label("ПОИСК ПО СМЫСЛУ И ВАЖНЫМ МОМЕНТАМ"));importantSearch=new EditText(this);importantSearch.setHint("цена, срок, решение, клиент…");importantSearch.setSingleLine(true);searchCard.addView(importantSearch,lp(-1,dp(52),0,6,0,6));searchImportantButton=secondaryButton("Найти");searchCard.addView(searchImportantButton);importantResults=tv("Откройте встречу, чтобы искать по содержанию",14,false,0xFF343942);searchCard.addView(importantResults,lp(-1,-2,0,10,0,0));meetingsPage.addView(searchCard,lp(-1,-2,0,0,0,12));meetingResultCard=card(CARD);meetingResult=tv("Выберите сохранённую встречу",14,false,0xFF333841);meetingResultCard.addView(meetingResult);LinearLayout actions=new LinearLayout(this);shareMeetingButton=secondaryButton("Поделиться");presentationButton=secondaryButton("Презентация");actions.addView(shareMeetingButton,new LinearLayout.LayoutParams(0,dp(48),1));actions.addView(presentationButton,new LinearLayout.LayoutParams(0,dp(48),1));meetingResultCard.addView(actions,lp(-1,-2,0,12,0,0));meetingResultCard.setVisibility(View.GONE);meetingsPage.addView(meetingResultCard);
+        meetingsPage=new LinearLayout(this);meetingsPage.setOrientation(LinearLayout.VERTICAL);pages.addView(meetingsPage);sectionTitle(meetingsPage,"Meetings","Защищённая история · поиск · Grok AI");meetingHistoryHost=new LinearLayout(this);meetingHistoryHost.setOrientation(LinearLayout.VERTICAL);meetingsPage.addView(meetingHistoryHost);LinearLayout searchCard=card(CARD);searchCard.addView(label("ПОИСК ПО СМЫСЛУ И ВАЖНЫМ МОМЕНТАМ"));importantSearch=new EditText(this);importantSearch.setHint("цена, срок, решение, клиент…");importantSearch.setSingleLine(true);searchCard.addView(importantSearch,lp(-1,dp(52),0,6,0,6));searchImportantButton=secondaryButton("Найти локально");searchCard.addView(searchImportantButton);importantResults=tv("Откройте встречу, чтобы искать по содержанию",14,false,0xFF343942);searchCard.addView(importantResults,lp(-1,-2,0,10,0,0));meetingsPage.addView(searchCard,lp(-1,-2,0,0,0,12));
+        LinearLayout aiCard=card(DARK);aiCard.addView(chip("GROK MEETING INTELLIGENCE",0xFF202737,0xFF9BB0FF));aiCard.addView(tv("Смысл вместо шаблона",21,true,Color.WHITE),lp(-1,-2,0,10,0,4));aiCard.addView(tv("Grok выделяет реальные решения, задачи, цифры, риски и сам выбирает структуру презентации по содержанию разговора.",13,false,0xFFB8BFCA));aiAnalyzeButton=primaryButton("GROK АНАЛИЗ");aiCard.addView(aiAnalyzeButton,lp(-1,dp(50),0,14,0,10));aiAnalysisResult=tv("AI-анализ появится после открытия встречи",14,false,0xFFE4E7ED);aiCard.addView(aiAnalysisResult);meetingsPage.addView(aiCard,lp(-1,-2,0,0,0,12));
+        meetingResultCard=card(CARD);meetingResult=tv("Выберите сохранённую встречу",14,false,0xFF333841);meetingResultCard.addView(meetingResult);LinearLayout actions=new LinearLayout(this);shareMeetingButton=secondaryButton("Поделиться");presentationButton=secondaryButton("Презентация");actions.addView(shareMeetingButton,new LinearLayout.LayoutParams(0,dp(48),1));actions.addView(presentationButton,new LinearLayout.LayoutParams(0,dp(48),1));meetingResultCard.addView(actions,lp(-1,-2,0,12,0,0));meetingResultCard.setVisibility(View.GONE);meetingsPage.addView(meetingResultCard);
 
-        presentationPage=new LinearLayout(this);presentationPage.setOrientation(LinearLayout.VERTICAL);pages.addView(presentationPage);sectionTitle(presentationPage,"Slides","Главное из разговора → структура презентации");LinearLayout pCard=card(DARK);pCard.addView(chip("MEETING → SLIDES",0xFF202737,0xFF9BB0FF));pCard.addView(tv("LiveLingo выделяет смысл, решения, задачи и риски. AI-анализ будет подстраивать структуру под реальный разговор.",15,false,Color.WHITE),lp(-1,-2,0,10,0,14));generatePresentationButton=primaryButton("СОБРАТЬ ПРЕЗЕНТАЦИЮ");pCard.addView(generatePresentationButton);presentationPage.addView(pCard,lp(-1,-2,0,0,0,12));LinearLayout pResult=card(CARD);presentationResult=tv("Сначала откройте встречу во вкладке Meet",15,false,0xFF252A32);pResult.addView(presentationResult);sharePresentationButton=secondaryButton("Поделиться структурой");pResult.addView(sharePresentationButton,lp(-1,dp(48),0,12,0,0));presentationPage.addView(pResult);
+        presentationPage=new LinearLayout(this);presentationPage.setOrientation(LinearLayout.VERTICAL);pages.addView(presentationPage);sectionTitle(presentationPage,"Slides","Структура зависит от смысла конкретной встречи");LinearLayout pCard=card(DARK);pCard.addView(chip("MEETING → ADAPTIVE SLIDES",0xFF202737,0xFF9BB0FF));pCard.addView(tv("Если Grok подключён, количество и содержание слайдов определяются разговором. Без API остаётся локальный резервный анализ.",15,false,Color.WHITE),lp(-1,-2,0,10,0,14));generatePresentationButton=primaryButton("СОБРАТЬ AI-ПРЕЗЕНТАЦИЮ");pCard.addView(generatePresentationButton);presentationPage.addView(pCard,lp(-1,-2,0,0,0,12));LinearLayout pResult=card(CARD);presentationResult=tv("Сначала откройте встречу во вкладке Meet",15,false,0xFF252A32);pResult.addView(presentationResult);sharePresentationButton=secondaryButton("Поделиться структурой");pResult.addView(sharePresentationButton,lp(-1,dp(48),0,12,0,0));presentationPage.addView(pResult);
 
         libraryPage=new LinearLayout(this);libraryPage.setOrientation(LinearLayout.VERTICAL);pages.addView(libraryPage);sectionTitle(libraryPage,"Library","Транскрипты, переводы и материалы встреч");
-        profilePage=new LinearLayout(this);profilePage.setOrientation(LinearLayout.VERTICAL);pages.addView(profilePage);sectionTitle(profilePage,"AI & Privacy","Модели загружаются по требованию и данные остаются на устройстве");LinearLayout aiVoiceCard=card(DARK);aiVoiceCard.addView(chip("NEURAL VOICE",0xFF202737,0xFF9BB0FF));aiVoiceCard.addView(tv("Kokoro 82M",23,true,Color.WHITE),lp(-1,-2,0,10,0,3));neuralVoiceStatus=tv("Проверяю модель…",13,false,0xFFB8BFCA);aiVoiceCard.addView(neuralVoiceStatus);aiVoiceCard.addView(tv("Модель хранится отдельно от APK и загружается в RAM только когда включён AI Voice.",13,false,0xFF8F97A5),lp(-1,-2,0,10,0,14));downloadVoiceButton=primaryButton("СКАЧАТЬ KOKORO");aiVoiceCard.addView(downloadVoiceButton);profilePage.addView(aiVoiceCard);LinearLayout privacy=card(CARD);privacy.addView(label("ПРИВАТНОСТЬ"));privacy.addView(tv("Whisper · перевод · встречи · голос работают локально там, где модель доступна. Зашифрованные встречи не попадают в резервные копии Android.",14,false,0xFF414751),lp(-1,-2,0,8,0,0));profilePage.addView(privacy,lp(-1,-2,0,12,0,0));
+        profilePage=new LinearLayout(this);profilePage.setOrientation(LinearLayout.VERTICAL);pages.addView(profilePage);sectionTitle(profilePage,"AI & Privacy","Локальные модели + опциональный Grok для глубокого анализа");
+        LinearLayout xaiCard=card(CARD);xaiCard.addView(chip("XAI · GROK 4.6",0xFFE8ECFF,BLUE));xaiStatus=tv("Проверяю подключение…",14,true,INK);xaiCard.addView(xaiStatus,lp(-1,-2,0,10,0,5));xaiCard.addView(tv("Аудио в xAI не отправляется. Только текст открытой встречи и только после нажатия Grok-анализ / AI-презентация.",12,false,MUTED));xaiKeyInput=new EditText(this);xaiKeyInput.setSingleLine(true);xaiKeyInput.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);xaiKeyInput.setHint("xai-…");xaiCard.addView(xaiKeyInput,lp(-1,dp(52),0,10,0,7));LinearLayout keyActions=new LinearLayout(this);saveXaiButton=primaryButton("СОХРАНИТЬ КЛЮЧ");clearXaiButton=secondaryButton("Удалить");keyActions.addView(saveXaiButton,new LinearLayout.LayoutParams(0,dp(50),2));keyActions.addView(clearXaiButton,new LinearLayout.LayoutParams(0,dp(50),1));xaiCard.addView(keyActions);profilePage.addView(xaiCard,lp(-1,-2,0,0,0,12));
+        LinearLayout aiVoiceCard=card(DARK);aiVoiceCard.addView(chip("NEURAL VOICE",0xFF202737,0xFF9BB0FF));aiVoiceCard.addView(tv("Kokoro 82M",23,true,Color.WHITE),lp(-1,-2,0,10,0,3));neuralVoiceStatus=tv("Проверяю модель…",13,false,0xFFB8BFCA);aiVoiceCard.addView(neuralVoiceStatus);aiVoiceCard.addView(tv("Модель хранится отдельно от APK и загружается в RAM только когда включён AI Voice.",13,false,0xFF8F97A5),lp(-1,-2,0,10,0,14));downloadVoiceButton=primaryButton("СКАЧАТЬ KOKORO");aiVoiceCard.addView(downloadVoiceButton);profilePage.addView(aiVoiceCard);LinearLayout privacy=card(CARD);privacy.addView(label("ПРИВАТНОСТЬ"));privacy.addView(tv("Whisper · перевод · встречи · голос работают локально там, где модель доступна. xAI API-ключ шифруется Android Keystore. Зашифрованные встречи не попадают в резервные копии Android.",14,false,0xFF414751),lp(-1,-2,0,8,0,0));profilePage.addView(privacy,lp(-1,-2,0,12,0,0));
 
         LinearLayout nav=new LinearLayout(this);nav.setGravity(Gravity.CENTER);nav.setPadding(dp(4),dp(5),dp(4),dp(8));nav.setBackgroundColor(CARD);navLive=navButton("Live");navMeetings=navButton("Meet");navPresentation=navButton("Slides");navLibrary=navButton("Library");navProfile=navButton("AI");nav.addView(navLive,new LinearLayout.LayoutParams(0,dp(50),1));nav.addView(navMeetings,new LinearLayout.LayoutParams(0,dp(50),1));nav.addView(navPresentation,new LinearLayout.LayoutParams(0,dp(50),1));nav.addView(navLibrary,new LinearLayout.LayoutParams(0,dp(50),1));nav.addView(navProfile,new LinearLayout.LayoutParams(0,dp(50),1));shell.addView(nav);setContentView(shell);
     }
