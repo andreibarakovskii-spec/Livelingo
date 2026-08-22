@@ -79,10 +79,14 @@ public final class SessionRuntime implements SttEngine.Listener {
 
     /** In conversation mode inputLanguage=participant 1, targetLanguage=participant 2. Both may be auto. */
     public synchronized void configure(String mode,String inputLanguage,String targetLanguage){
-        boolean pairChanged=(mode!=null&&!mode.equals(this.mode))||(inputLanguage!=null&&!inputLanguage.equals(this.inputLanguage))||(targetLanguage!=null&&!targetLanguage.equals(this.targetLanguage));
-        if(mode!=null)this.mode=mode;if(inputLanguage!=null)this.inputLanguage=inputLanguage;if(targetLanguage!=null)this.targetLanguage=targetLanguage;
+        String nextMode=mode==null?this.mode:mode;
+        String nextInput=inputLanguage==null?this.inputLanguage:inputLanguage;
+        String nextTarget=targetLanguage==null?this.targetLanguage:targetLanguage;
+        boolean pairChanged=!nextMode.equals(this.mode)||!nextInput.equals(this.inputLanguage)||!nextTarget.equals(this.targetLanguage);
+        if(!pairChanged)return;
+        this.mode=nextMode;this.inputLanguage=nextInput;this.targetLanguage=nextTarget;
         speech.setInputLanguage("conversation".equals(this.mode)?"auto":this.inputLanguage);translator.setTarget(this.targetLanguage);systemSpeaker.selectOfflineVoice("auto".equals(this.targetLanguage)?"ru":this.targetLanguage);spokenDiff.reset();utteranceGeneration++;
-        if(pairChanged){learnedConversationLang1=null;learnedConversationLang2=null;speakerRouter.reset();currentSpeaker=1;speakerLabel="";}
+        learnedConversationLang1=null;learnedConversationLang2=null;speakerRouter.reset();currentSpeaker=1;speakerLabel="";
     }
     public synchronized void start(){if(active)return;selectBestEngine();active=true;status="whisper".equals(sttEngineName)?"LiveLingo AI запускается…":"Слушаю…";sourceText="";translatedText="";spokenDiff.reset();utteranceGeneration++;speakerRouter.reset();learnedConversationLang1=null;learnedConversationLang2=null;currentSpeaker=1;speakerLabel="";if(!"auto".equals(targetLanguage))systemSpeaker.selectOfflineVoice(targetLanguage);if("meeting".equals(mode)){meetingStore.start();meetingEngine.reset();insights.clear();}speech.start();notifyState();}
     public synchronized void stop(){if(!active)return;active=false;speech.stop();systemSpeaker.stop();neuralSpeaker.stop();spokenDiff.reset();speakerRouter.reset();utteranceGeneration++;status="Остановлено";notifyState();if("meeting".equals(mode))finalizeMeeting();}
