@@ -21,7 +21,7 @@ import java.util.concurrent.Executors;
 /** Lazy local Kokoro controller using the official sherpa-onnx model pack. */
 public final class NeuralVoiceManager {
     public interface Listener { void onStatus(String message); void onDownloadProgress(int percent); }
-    public interface Fallback { void speak(String text, boolean finalChunk, int voiceProfile); }
+    public interface Fallback { void speak(String text, String language, boolean finalChunk, int voiceProfile); }
 
     private static final long MIN_MODEL_BYTES = 300_000_000L;
     private static final long RELEASE_AFTER_MS = 35_000L;
@@ -65,9 +65,9 @@ public final class NeuralVoiceManager {
 
     public void speak(String text,String language,boolean finalChunk,int voiceProfile){
         if(closed||text==null||text.isBlank())return;
-        if(!"en".equals(shortLang(language))||!isInstalled()){fallback.speak(text,finalChunk,voiceProfile);return;}
+        if(!"en".equals(shortLang(language))||!isInstalled()){fallback.speak(text,language,finalChunk,voiceProfile);return;}
         final String clean=text.trim();final int sid=voiceProfile<=0?10:(voiceProfile>=2?3:6);
-        worker.execute(()->{if(closed)return;try{String remaining=clean;while(!remaining.isBlank()&&!closed){int cut=Math.min(180,remaining.length());if(cut<remaining.length()){int ws=remaining.lastIndexOf(' ',cut);if(ws>80)cut=ws;}String part=remaining.substring(0,cut).trim();remaining=remaining.substring(cut).trim();byte[] wav=KokoroBridge.synthesize(modelDir().getAbsolutePath(),part,sid);if(wav==null||wav.length<64)throw new IllegalStateException("пустой аудиорезультат");playWav(wav);}scheduleRelease();}catch(Throwable e){postStatus("Kokoro: "+safe(e.getMessage())+" · резервный голос");fallback.speak(clean,finalChunk,voiceProfile);scheduleRelease();}});
+        worker.execute(()->{if(closed)return;try{String remaining=clean;while(!remaining.isBlank()&&!closed){int cut=Math.min(180,remaining.length());if(cut<remaining.length()){int ws=remaining.lastIndexOf(' ',cut);if(ws>80)cut=ws;}String part=remaining.substring(0,cut).trim();remaining=remaining.substring(cut).trim();byte[] wav=KokoroBridge.synthesize(modelDir().getAbsolutePath(),part,sid);if(wav==null||wav.length<64)throw new IllegalStateException("пустой аудиорезультат");playWav(wav);}scheduleRelease();}catch(Throwable e){postStatus("Kokoro: "+safe(e.getMessage())+" · резервный голос");fallback.speak(clean,language,finalChunk,voiceProfile);scheduleRelease();}});
     }
 
     private void playWav(byte[] wav)throws Exception{File f=File.createTempFile("ll-voice-",".wav",context.getCacheDir());try(FileOutputStream o=new FileOutputStream(f)){o.write(wav);}final Object lock=new Object();final boolean[] done={false};main.post(()->{try{if(player!=null)try{player.release();}catch(Exception ignored){}player=new MediaPlayer();player.setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build());player.setDataSource(f.getAbsolutePath());player.setOnCompletionListener(mp->{synchronized(lock){done[0]=true;lock.notifyAll();}try{mp.release();}catch(Exception ignored){}if(player==mp)player=null;f.delete();});player.setOnErrorListener((mp,w,e)->{synchronized(lock){done[0]=true;lock.notifyAll();}f.delete();return false;});player.prepare();player.start();}catch(Exception e){synchronized(lock){done[0]=true;lock.notifyAll();}f.delete();}});synchronized(lock){long until=System.currentTimeMillis()+30000;while(!done[0]&&!closed&&System.currentTimeMillis()<until)lock.wait(500);}f.delete();}
