@@ -1,6 +1,7 @@
 package com.imagine.livelingo.stt;
 
 import android.content.Context;
+import com.imagine.livelingo.audio.VoiceProfileAnalyzer;
 import java.io.File;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -56,7 +57,10 @@ public final class WhisperOnnxEngine implements SttEngine {
             if(r==null||r.text==null||r.text.isBlank())return;
             String stable=stabilizer.accept(r.text,finalChunk);
             if(stable.isBlank())return;
-            if(finalChunk)listener.onFinal(stable,r.language);else listener.onPartial(stable,r.language);
+            if(finalChunk){
+                listener.onVoiceProfile(VoiceProfileAnalyzer.analyze(samples));
+                listener.onFinal(stable,r.language);
+            }else listener.onPartial(stable,r.language);
         }catch(Exception e){listener.onError("Ошибка локального распознавания: "+e.getMessage());}
     }
 
