@@ -1,5 +1,7 @@
 package com.imagine.livelingo.stt;
 
+import com.imagine.livelingo.audio.VoiceProfile;
+
 public interface SttEngine {
     interface Listener {
         void onReady();
@@ -7,6 +9,7 @@ public interface SttEngine {
         void onFinal(String text, String language);
         void onError(String message);
         void onStatus(String status);
+        default void onVoiceProfile(VoiceProfile profile) {}
     }
 
     boolean isAvailable();
