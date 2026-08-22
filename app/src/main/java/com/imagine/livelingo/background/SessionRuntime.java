@@ -1,11 +1,13 @@
 package com.imagine.livelingo.background;
 
 import android.content.Context;
+import com.imagine.livelingo.OfflineSpeaker;
 import com.imagine.livelingo.TranslationEngine;
 import com.imagine.livelingo.business.Insight;
 import com.imagine.livelingo.business.MeetingInsightEngine;
 import com.imagine.livelingo.business.MeetingReportBuilder;
 import com.imagine.livelingo.business.MeetingSessionStore;
+import com.imagine.livelingo.core.SpokenDiff;
 import com.imagine.livelingo.stt.SttEngine;
 import com.imagine.livelingo.stt.SystemSttEngine;
 import com.imagine.livelingo.stt.WhisperOnnxEngine;
@@ -47,6 +49,8 @@ public final class SessionRuntime implements SttEngine.Listener {
     private final SystemSttEngine systemSpeech;
     private final WhisperOnnxEngine whisperSpeech;
     private final TranslationEngine translator;
+    private final OfflineSpeaker speaker;
+    private final SpokenDiff spokenDiff=new SpokenDiff(2);
     private final MeetingSessionStore meetingStore=new MeetingSessionStore();
     private final MeetingInsightEngine meetingEngine=new MeetingInsightEngine();
     private final List<Insight> insights=new ArrayList<>();
@@ -60,11 +64,13 @@ public final class SessionRuntime implements SttEngine.Listener {
     private String translatedText="";
     private String detectedLanguage;
     private String sttEngineName="system";
+    private long utteranceGeneration=0;
 
     private SessionRuntime(Context context){
         this.context=context;
         meetingStore.attachVault(context);
         translator=new TranslationEngine();
+        speaker=new OfflineSpeaker(context, s -> { synchronized(SessionRuntime.this){ if(active && !"meeting".equals(mode)) status=s; } notifyState(); });
         systemSpeech=new SystemSttEngine(context,this);
         whisperSpeech=new WhisperOnnxEngine(context,this);
         selectBestEngine();
@@ -98,19 +104,23 @@ public final class SessionRuntime implements SttEngine.Listener {
         if(targetLanguage!=null) this.targetLanguage=targetLanguage;
         speech.setInputLanguage(this.inputLanguage);
         translator.setTarget(this.targetLanguage);
+        speaker.selectOfflineVoice(this.targetLanguage);
+        spokenDiff.reset(); utteranceGeneration++;
     }
 
     public synchronized void start(){
         if(active) return;
         selectBestEngine();
         active=true; status="whisper".equals(sttEngineName)?"LiveLingo AI запускается…":"Слушаю…"; sourceText=""; translatedText="";
+        spokenDiff.reset(); utteranceGeneration++;
+        speaker.selectOfflineVoice(targetLanguage);
         if("meeting".equals(mode)){ meetingStore.start(); meetingEngine.reset(); insights.clear(); }
         speech.start(); notifyState();
     }
 
     public synchronized void stop(){
         if(!active) return;
-        active=false; speech.stop(); status="Остановлено"; notifyState();
+        active=false; speech.stop(); speaker.stop(); spokenDiff.reset(); utteranceGeneration++; status="Остановлено"; notifyState();
         if("meeting".equals(mode)) finalizeMeeting();
     }
 
@@ -123,20 +133,32 @@ public final class SessionRuntime implements SttEngine.Listener {
     }
 
     private void handleText(String text,boolean isFinal,String lang){
-        synchronized(this){ sourceText=text; detectedLanguage=lang; }
+        final long generation;
+        synchronized(this){ sourceText=text; detectedLanguage=lang; generation=utteranceGeneration; }
         if("meeting".equals(mode) && isFinal){
             synchronized(this){ insights.addAll(meetingEngine.analyze(text,meetingStore.durationMs())); }
         }
         final String hint="auto".equals(inputLanguage)?lang:inputLanguage;
         translator.translateAuto(text,hint,new TranslationEngine.Callback(){
             @Override public void onTranslated(String sourceLanguage,String translated){
+                String toSpeak="";
                 synchronized(SessionRuntime.this){
+                    if(!active || generation!=utteranceGeneration) return;
                     detectedLanguage=sourceLanguage; translatedText=translated; status=isFinal?"Слушаю дальше…":"Перевожу…";
                     if("meeting".equals(mode) && isFinal) meetingStore.add("Участник",sourceLanguage,text,translated);
+                    // Meetings stay silent so TTS cannot pollute the transcript. Live translation and
+                    // conversation speak only the newly-stabilised translated words.
+                    if(!"meeting".equals(mode)){
+                        toSpeak=isFinal?spokenDiff.flushFinal(translated):spokenDiff.acceptPartial(translated,false);
+                        if(isFinal){ spokenDiff.reset(); utteranceGeneration++; }
+                    } else if(isFinal) {
+                        utteranceGeneration++;
+                    }
                 }
+                if(!toSpeak.isBlank()) speaker.speak(toSpeak,isFinal);
                 notifyState();
             }
-            @Override public void onError(String message){ synchronized(SessionRuntime.this){ status=message; } notifyState(); }
+            @Override public void onError(String message){ synchronized(SessionRuntime.this){ if(generation!=utteranceGeneration)return; status=message; } notifyState(); }
         });
         notifyState();
     }
