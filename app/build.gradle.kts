@@ -1,5 +1,6 @@
 plugins {
     id("com.android.application")
+    id("org.jetbrains.kotlin.android")
 }
 
 android {
@@ -26,6 +27,7 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+    kotlinOptions { jvmTarget = "17" }
 }
 
 dependencies {
@@ -33,5 +35,7 @@ dependencies {
     implementation("com.google.mlkit:language-id:17.0.6")
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.19.0")
     implementation("com.microsoft.onnxruntime:onnxruntime-extensions-android:0.12.4")
+    implementation("dev.ffmpegkit-maintained:kokoro-android:0.1.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     testImplementation("junit:junit:4.13.2")
 }
