@@ -16,18 +16,18 @@ public final class TranslationEngine {
     private final Map<String, Translator> translators = new HashMap<>(); private String target = "ru";
     public void setTarget(String targetLanguage) { this.target = targetLanguage; }
     public void translateAuto(String text, String detectedHint, Callback cb) { translateAutoTo(text,detectedHint,target,cb); }
-    public void translateAutoTo(String text,String detectedHint,String targetLanguage,Callback cb){
+    public void translateAutoTo(String text,String detectedHint,String requestedTarget,Callback cb) {
         if (text == null || text.trim().isEmpty()) return;
         final String hint = normalizeTag(detectedHint);
-        final String wanted=normalizeTag(targetLanguage);
-        if(wanted==null){cb.onError("Язык перевода пока не поддерживается");return;}
+        final String dst = normalizeTag(requestedTarget);
+        if(dst==null){cb.onError("Язык перевода пока не определён");return;}
         identifier.identifyLanguage(text).addOnSuccessListener(code -> {
             String identified = normalizeTag(code);
             String chosen = chooseSource(text, hint, identified);
             if (chosen == null) cb.onError("Язык пока не определён");
-            else translate(text, chosen,wanted, cb);
+            else translate(text, chosen, dst, cb);
         }).addOnFailureListener(e -> {
-            if (hint != null) translate(text, hint,wanted, cb);
+            if (hint != null) translate(text, hint, dst, cb);
             else cb.onError("Не удалось определить язык: " + e.getMessage());
         });
     }
@@ -44,10 +44,10 @@ public final class TranslationEngine {
         }
         return hint != null ? hint : identified;
     }
-    private void translate(String text, String source,String wanted, Callback cb) {
+    private void translate(String text, String source,String requestedTarget, Callback cb) {
         if (source == null) { cb.onError("Этот язык пока не поддерживается переводчиком"); return; }
-        if (source.equals(wanted)) { cb.onTranslated(source, text); return; }
-        String src = TranslateLanguage.fromLanguageTag(source), dst = TranslateLanguage.fromLanguageTag(wanted);
+        if (source.equals(requestedTarget)) { cb.onTranslated(source, text); return; }
+        String src = TranslateLanguage.fromLanguageTag(source), dst = TranslateLanguage.fromLanguageTag(requestedTarget);
         if (src == null || dst == null) { cb.onError("Перевод этой языковой пары пока не поддерживается"); return; }
         String key = src + ">" + dst; Translator translator = translators.get(key);
         if (translator == null) {
@@ -61,7 +61,7 @@ public final class TranslationEngine {
                 .addOnFailureListener(e -> cb.onError("Нужна сеть один раз, чтобы скачать языковую модель"));
     }
     private static String normalizeTag(String tag) {
-        if (tag == null || tag.isBlank() || "und".equalsIgnoreCase(tag)||"auto".equalsIgnoreCase(tag)) return null; String lang = tag.split("[-_]")[0].toLowerCase();
+        if (tag == null || tag.isBlank() || "und".equalsIgnoreCase(tag) || "auto".equalsIgnoreCase(tag)) return null; String lang = tag.split("[-_]")[0].toLowerCase();
         return TranslateLanguage.fromLanguageTag(lang) == null ? null : lang;
     }
     public void close() { identifier.close(); for (Translator t : translators.values()) t.close(); translators.clear(); }
