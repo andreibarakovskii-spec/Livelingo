@@ -10,6 +10,10 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        maven {
+            url = uri("https://jitpack.io")
+            content { includeGroupByRegex("com\\.github\\.ffmpegkit-maintained.*") }
+        }
     }
 }
 rootProject.name = "LiveLingo"
