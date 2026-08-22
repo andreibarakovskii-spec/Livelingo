@@ -26,5 +26,6 @@ public final class SystemSttEngine implements SttEngine, LiveSpeechRecognizer.Li
         if ("Говорите".equals(status)) listener.onReady();
         listener.onStatus(status);
     }
+    @Override public void onSpeechStart() { listener.onSpeechStart(); }
     @Override public void onError(String error) { listener.onError(error); }
 }
