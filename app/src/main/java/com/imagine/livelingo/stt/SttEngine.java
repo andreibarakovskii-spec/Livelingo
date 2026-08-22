@@ -10,6 +10,8 @@ public interface SttEngine {
         void onError(String message);
         void onStatus(String status);
         default void onVoiceProfile(VoiceProfile profile) {}
+        /** Fired when a new acoustic speech segment begins, before transcription is ready. */
+        default void onSpeechStart() {}
     }
 
     boolean isAvailable();
