@@ -124,6 +124,17 @@ public final class SessionRuntime implements SttEngine.Listener {
             @Override public void onError(String message){synchronized(SessionRuntime.this){if(generation!=utteranceGeneration)return;status=message;}notifyState();}
         });notifyState();
     }
+
+    @Override public void onSpeechStart(){
+        boolean interrupted=false;
+        synchronized(this){
+            if(!active||"meeting".equals(mode)||VOICE_OFF.equals(voiceMode))return;
+            interrupted=systemSpeaker.isSpeaking()||neuralSpeaker.isSpeaking();
+            if(interrupted){status="Слушаю вас · озвучка прервана";spokenDiff.reset();}
+        }
+        if(interrupted){systemSpeaker.stop();neuralSpeaker.stop();notifyState();}
+    }
+
     private static String normalizeVoiceMode(String s){return VOICE_AI.equals(s)?VOICE_AI:(VOICE_SYSTEM.equals(s)?VOICE_SYSTEM:VOICE_OFF);}
     private static int bandToInt(VoiceProfile.Band b){return b==VoiceProfile.Band.LOW?0:(b==VoiceProfile.Band.HIGH?2:1);}private static VoiceProfile.Band bandFromInt(int p){return p<=0?VoiceProfile.Band.LOW:(p>=2?VoiceProfile.Band.HIGH:VoiceProfile.Band.NEUTRAL);}
     private static String shortLang(String tag){if(tag==null||tag.isBlank()||"auto".equalsIgnoreCase(tag))return null;return tag.split("[-_]")[0].toLowerCase();}
