@@ -33,7 +33,9 @@ dependencies {
     implementation("com.google.mlkit:language-id:17.0.6")
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.19.0")
     implementation("com.microsoft.onnxruntime:onnxruntime-extensions-android:0.12.4")
-    implementation("com.github.ffmpegkit-maintained.kokoro-android:library:3146f9bf93")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation("com.xdcobra.sherpa:sherpa-onnx:1.13.2-1:java@aar") {
+        exclude(group = "com.xdcobra.sherpa", module = "onnxruntime")
+    }
+    implementation("org.apache.commons:commons-compress:1.27.1")
     testImplementation("junit:junit:4.13.2")
 }
