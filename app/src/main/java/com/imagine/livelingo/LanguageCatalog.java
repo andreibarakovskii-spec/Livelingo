@@ -14,6 +14,7 @@ public final class LanguageCatalog {
         INPUTS.put("Português", "pt"); INPUTS.put("Polski", "pl"); INPUTS.put("Türkçe", "tr");
         INPUTS.put("Українська", "uk"); INPUTS.put("中文", "zh"); INPUTS.put("日本語", "ja");
         INPUTS.put("한국어", "ko"); INPUTS.put("العربية", "ar"); INPUTS.put("हिन्दी", "hi");
+        TARGETS.put("Автоопределение", "auto");
         TARGETS.put("Русский", "ru"); TARGETS.put("English", "en"); TARGETS.put("Deutsch", "de");
         TARGETS.put("Español", "es"); TARGETS.put("Français", "fr"); TARGETS.put("Italiano", "it");
         TARGETS.put("Português", "pt"); TARGETS.put("Polski", "pl"); TARGETS.put("Türkçe", "tr");
@@ -21,7 +22,7 @@ public final class LanguageCatalog {
         TARGETS.put("한국어", "ko"); TARGETS.put("العربية", "ar"); TARGETS.put("हिन्दी", "hi");
     }
     private LanguageCatalog() {}
-    public static Locale localeFor(String tag) { return Locale.forLanguageTag(tag == null ? "ru" : tag); }
+    public static Locale localeFor(String tag) { return Locale.forLanguageTag(tag == null || "auto".equals(tag) ? "ru" : tag); }
     public static String displayForCode(String code) {
         if (code == null || code.isBlank() || "auto".equals(code)) return "авто";
         Locale l = Locale.forLanguageTag(code); String name = l.getDisplayLanguage(new Locale("ru"));
