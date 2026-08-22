@@ -21,13 +21,13 @@ public final class LiveSpeechRecognizer implements RecognitionListener {
         forcedLanguage = code == null ? "auto" : code;
         detectedLanguage = "auto".equals(forcedLanguage) ? null : forcedLanguage;
         trace.log("LANGUAGE_SET", forcedLanguage);
-        if(running) scheduleFullRestart("language-change", 250);
+        if(running) scheduleFullRestart("language-change", 80);
     }
     public void start() {
         if (running) return;
         if (!isOnDeviceAvailable()) { listener.onError("На этом телефоне нет системного офлайн-распознавания речи"); return; }
         running = true; trace.clear(); trace.log("START", "forced="+forcedLanguage+" sdk="+Build.VERSION.SDK_INT);
-        createRecognizer(); startSession(120);
+        createRecognizer(); startSession(40);
     }
     private void createRecognizer(){
         listening=false;
@@ -38,7 +38,7 @@ public final class LiveSpeechRecognizer implements RecognitionListener {
         if(!running || restarting) return; restarting=true; listening=false; trace.log("RESTART_SCHEDULE", why);
         handler.postDelayed(() -> {
             try { if(recognizer!=null) recognizer.cancel(); } catch(Exception ignored) {}
-            createRecognizer(); restarting=false; startSession(180);
+            createRecognizer(); restarting=false; startSession(20);
         }, delay);
     }
     private String speechTag(String code){ if("en".equals(code))return "en-US"; if("ru".equals(code))return "ru-RU"; if("de".equals(code))return "de-DE"; if("fr".equals(code))return "fr-FR"; if("es".equals(code))return "es-ES"; if("it".equals(code))return "it-IT"; if("pt".equals(code))return "pt-BR"; if("pl".equals(code))return "pl-PL"; if("tr".equals(code))return "tr-TR"; if("uk".equals(code))return "uk-UA"; if("zh".equals(code))return "zh-CN"; if("ja".equals(code))return "ja-JP"; if("ko".equals(code))return "ko-KR"; if("ar".equals(code))return "ar-SA"; if("hi".equals(code))return "hi-IN"; return code; }
@@ -46,7 +46,11 @@ public final class LiveSpeechRecognizer implements RecognitionListener {
         Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
         i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
         i.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true); i.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3); i.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true);
-        i.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 650L); i.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 450L);
+        // Keep one recognition session alive through normal conversational pauses. This greatly
+        // reduces endpoint/restart tones and avoids losing the first words of the next clause.
+        i.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1800L);
+        i.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1100L);
+        i.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1200L);
         if (Build.VERSION.SDK_INT >= 33) { i.putExtra(RecognizerIntent.EXTRA_ENABLE_FORMATTING, "latency"); i.putExtra(RecognizerIntent.EXTRA_HIDE_PARTIAL_TRAILING_PUNCTUATION, true); }
         if (!"auto".equals(forcedLanguage)) {
             String tag=speechTag(forcedLanguage); i.putExtra(RecognizerIntent.EXTRA_LANGUAGE, tag); i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, tag); detectedLanguage=forcedLanguage;
@@ -62,8 +66,8 @@ public final class LiveSpeechRecognizer implements RecognitionListener {
         handler.postDelayed(() -> {
             if (!running || recognizer == null || restarting || listening) return;
             try { recognizer.startListening(buildIntent()); listening=true; trace.log("SESSION_START", "forced="+forcedLanguage); listener.onStatus("Слушаю…"); }
-            catch(Exception e){ trace.log("SESSION_START_EXCEPTION", e.toString()); scheduleFullRestart("start-exception",300); }
-        }, delay);
+            catch(Exception e){ trace.log("SESSION_START_EXCEPTION", e.toString()); scheduleFullRestart("start-exception",120); }
+        }, Math.max(0,delay));
     }
     public void stop() { running=false; listening=false; restarting=false; trace.log("STOP", "user"); handler.removeCallbacksAndMessages(null); if(recognizer!=null){ try{recognizer.cancel();}catch(Exception ignored){} try{recognizer.destroy();}catch(Exception ignored){} recognizer=null; } }
     @Override public void onReadyForSpeech(Bundle params) { trace.log("READY", ""); listener.onStatus("Говорите"); }
@@ -73,11 +77,11 @@ public final class LiveSpeechRecognizer implements RecognitionListener {
     @Override public void onEndOfSpeech() { trace.log("END", ""); listener.onStatus("Уточняю фразу…"); }
     @Override public void onError(int error) {
         listening=false; trace.log("ERROR", String.valueOf(error)); if (!running) return;
-        if(error==SpeechRecognizer.ERROR_CLIENT || error==SpeechRecognizer.ERROR_RECOGNIZER_BUSY){ scheduleFullRestart("error-"+error,350); return; }
+        if(error==SpeechRecognizer.ERROR_CLIENT || error==SpeechRecognizer.ERROR_RECOGNIZER_BUSY){ scheduleFullRestart("error-"+error,100); return; }
         if (error != SpeechRecognizer.ERROR_NO_MATCH && error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT) listener.onError("Распознавание: код " + error);
-        startSession(300);
+        startSession(20);
     }
-    @Override public void onResults(Bundle results) { listening=false; trace.log("FINAL", safeFirst(results)); emit(results, true); startSession(250); }
+    @Override public void onResults(Bundle results) { listening=false; trace.log("FINAL", safeFirst(results)); emit(results, true); startSession(0); }
     @Override public void onPartialResults(Bundle partialResults) { trace.log("PARTIAL", safeFirst(partialResults)); emit(partialResults, false); }
     @Override public void onEvent(int eventType, Bundle params) { trace.log("EVENT", String.valueOf(eventType)); }
     @Override public void onLanguageDetection(Bundle results) { if (Build.VERSION.SDK_INT >= 34 && "auto".equals(forcedLanguage)) { int confidence = results.getInt(SpeechRecognizer.LANGUAGE_DETECTION_CONFIDENCE_LEVEL, SpeechRecognizer.LANGUAGE_DETECTION_CONFIDENCE_LEVEL_UNKNOWN); String tag = results.getString(SpeechRecognizer.DETECTED_LANGUAGE); trace.log("LANGUAGE_DETECT", tag+" conf="+confidence); if (tag != null && !tag.isBlank() && confidence >= SpeechRecognizer.LANGUAGE_DETECTION_CONFIDENCE_LEVEL_CONFIDENT) detectedLanguage = tag; } }
