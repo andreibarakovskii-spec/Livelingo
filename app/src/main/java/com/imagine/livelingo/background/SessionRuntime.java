@@ -11,6 +11,7 @@ import com.imagine.livelingo.business.MeetingInsightEngine;
 import com.imagine.livelingo.business.MeetingReportBuilder;
 import com.imagine.livelingo.business.MeetingSessionStore;
 import com.imagine.livelingo.core.SpokenDiff;
+import com.imagine.livelingo.stt.GroqStreamingSttEngine;
 import com.imagine.livelingo.stt.SttEngine;
 import com.imagine.livelingo.stt.SystemSttEngine;
 import com.imagine.livelingo.stt.WhisperOnnxEngine;
@@ -38,7 +39,7 @@ public final class SessionRuntime implements SttEngine.Listener {
     private static SessionRuntime instance;
     public static synchronized SessionRuntime get(Context context){if(instance==null)instance=new SessionRuntime(context.getApplicationContext());return instance;}
 
-    private final Context context;private final SharedPreferences prefs;private SttEngine speech;private final SystemSttEngine systemSpeech;private final WhisperOnnxEngine whisperSpeech;
+    private final Context context;private final SharedPreferences prefs;private SttEngine speech;private final SystemSttEngine systemSpeech;private final WhisperOnnxEngine whisperSpeech;private final GroqStreamingSttEngine groqSpeech;
     private final TranslationEngine translator;private final OfflineSpeaker systemSpeaker;private final NeuralVoiceManager neuralSpeaker;private final SpokenDiff spokenDiff=new SpokenDiff(2);
     private final SpeakerRouter speakerRouter=new SpeakerRouter();
     private final MeetingSessionStore meetingStore=new MeetingSessionStore();private final MeetingInsightEngine meetingEngine=new MeetingInsightEngine();
@@ -55,16 +56,30 @@ public final class SessionRuntime implements SttEngine.Listener {
             @Override public void onStatus(String s){synchronized(SessionRuntime.this){if(!active||!"meeting".equals(mode))status=s;}notifyState();}
             @Override public void onDownloadProgress(int p){synchronized(SessionRuntime.this){status="AI Voice · "+p+"%";}notifyState();}
         },(text,language,finalChunk,profile)->systemSpeaker.speak(text,finalChunk,language,bandFromInt(profile)));
-        systemSpeech=new SystemSttEngine(context,this);whisperSpeech=new WhisperOnnxEngine(context,this);selectBestEngine();
+        systemSpeech=new SystemSttEngine(context,this);whisperSpeech=new WhisperOnnxEngine(context,this);groqSpeech=new GroqStreamingSttEngine(context,this);selectBestEngine();
     }
 
-    /** Meeting and Conversation prefer the persistent PCM/Whisper path. The system recognizer is only a compatibility fallback. */
+    /** Meeting never uses Android SpeechRecognizer when a continuous Whisper path is available. */
     private void selectBestEngine(){
-        if(whisperSpeech.isAvailable()){speech=whisperSpeech;sttEngineName="whisper";}else{speech=systemSpeech;sttEngineName="system";}
+        if("meeting".equals(mode)){
+            if(whisperSpeech.isAvailable()){speech=whisperSpeech;sttEngineName="whisper";}
+            else if(groqSpeech.isAvailable()){speech=groqSpeech;sttEngineName="groq-whisper";}
+            else{speech=systemSpeech;sttEngineName="system";}
+        }else if(whisperSpeech.isAvailable()){
+            speech=whisperSpeech;sttEngineName="whisper";
+        }else{
+            speech=systemSpeech;sttEngineName="system";
+        }
         boolean continuousMode="conversation".equals(mode)||"meeting".equals(mode);
         speech.setInputLanguage(continuousMode?"auto":inputLanguage);
     }
-    public synchronized void refreshEngine(){if(active)return;selectBestEngine();status="whisper".equals(sttEngineName)?"LiveLingo AI готов":"Системное распознавание · установите Whisper для бесшумной непрерывной записи";notifyState();}
+    public synchronized void refreshEngine(){
+        if(active)return;selectBestEngine();
+        if("whisper".equals(sttEngineName))status="LiveLingo AI готов";
+        else if("groq-whisper".equals(sttEngineName))status="Groq Whisper готов · непрерывная запись";
+        else status="Системное распознавание · для Meeting подключите gsk_ ключ или локальный Whisper";
+        notifyState();
+    }
     public void addObserver(Observer o){if(o!=null){observers.addIfAbsent(o);o.onState(snapshot());}}public void removeObserver(Observer o){observers.remove(o);}
     public synchronized Snapshot snapshot(){return new Snapshot(active,mode,status,sourceText,translatedText,detectedLanguage,sttEngineName,speakerLabel,voiceMode,whisperSpeech.isAvailable(),neuralSpeaker.isInstalled(),neuralSpeaker.isMultilingualInstalled(),Collections.unmodifiableList(new ArrayList<>(insights)));}
 
@@ -91,14 +106,18 @@ public final class SessionRuntime implements SttEngine.Listener {
         boolean pairChanged=!nextMode.equals(this.mode)||!nextInput.equals(this.inputLanguage)||!nextTarget.equals(this.targetLanguage);
         if(!pairChanged)return;
         this.mode=nextMode;this.inputLanguage=nextInput;this.targetLanguage=nextTarget;
+        if(!active)selectBestEngine();
         boolean continuousMode="conversation".equals(this.mode)||"meeting".equals(this.mode);
         speech.setInputLanguage(continuousMode?"auto":this.inputLanguage);translator.setTarget(this.targetLanguage);systemSpeaker.selectOfflineVoice("auto".equals(this.targetLanguage)?"ru":this.targetLanguage);spokenDiff.reset();utteranceGeneration++;
         learnedConversationLang1=null;learnedConversationLang2=null;speakerRouter.reset();currentSpeaker=1;speakerLabel="";
     }
     public synchronized void start(){
         if(active)return;selectBestEngine();active=true;
-        if("meeting".equals(mode))status="whisper".equals(sttEngineName)?"Непрерывная запись встречи · микрофон не закрывается":"Режим совместимости · установите Whisper, чтобы убрать системные сигналы";
-        else status="whisper".equals(sttEngineName)?"LiveLingo AI запускается…":"Слушаю…";
+        if("meeting".equals(mode)){
+            if("whisper".equals(sttEngineName))status="Непрерывная локальная запись · без системных сигналов";
+            else if("groq-whisper".equals(sttEngineName))status="Непрерывная запись · Groq Whisper · без системных сигналов";
+            else status="Режим совместимости · подключите gsk_ ключ или локальный Whisper";
+        }else status="whisper".equals(sttEngineName)?"LiveLingo AI запускается…":"Слушаю…";
         sourceText="";translatedText="";spokenDiff.reset();utteranceGeneration++;speakerRouter.reset();learnedConversationLang1=null;learnedConversationLang2=null;currentSpeaker=1;speakerLabel="";
         if(!"auto".equals(targetLanguage))systemSpeaker.selectOfflineVoice(targetLanguage);
         if("meeting".equals(mode)){meetingStore.start();meetingEngine.reset();insights.clear();}
@@ -192,10 +211,13 @@ public final class SessionRuntime implements SttEngine.Listener {
     private static int bandToInt(VoiceProfile.Band b){return b==VoiceProfile.Band.LOW?0:(b==VoiceProfile.Band.HIGH?2:1);}private static VoiceProfile.Band bandFromInt(int p){return p<=0?VoiceProfile.Band.LOW:(p>=2?VoiceProfile.Band.HIGH:VoiceProfile.Band.NEUTRAL);}
     private static String shortLang(String tag){if(tag==null||tag.isBlank()||"auto".equalsIgnoreCase(tag))return null;return tag.split("[-_]")[0].toLowerCase();}
     @Override public void onVoiceProfile(VoiceProfile profile){synchronized(this){SpeakerRouter.Match m=speakerRouter.assign(profile);currentSpeaker=m.speaker;currentVoice=m.profile;speakerLabel=("meeting".equals(mode)?"Спикер ":"Собеседник ")+currentSpeaker;}notifyState();}
-    @Override public void onReady(){synchronized(this){status="meeting".equals(mode)?("whisper".equals(sttEngineName)?"Запись идёт непрерывно":"Готов · системный режим совместимости"):"Говорите";}notifyState();}
+    @Override public void onReady(){synchronized(this){
+        if("meeting".equals(mode))status="system".equals(sttEngineName)?"Готов · системный режим совместимости":"Запись идёт непрерывно · "+("groq-whisper".equals(sttEngineName)?"Groq Whisper":"локальный Whisper");
+        else status="Говорите";
+    }notifyState();}
     @Override public void onPartial(String text,String language){handleText(text,false,language);}
     @Override public void onFinal(String text,String language){handleText(text,true,language);}
-    @Override public void onStatus(String s){synchronized(this){if(!"meeting".equals(mode)||!"whisper".equals(sttEngineName))status=s;}notifyState();}
+    @Override public void onStatus(String s){synchronized(this){if(!"meeting".equals(mode)||"system".equals(sttEngineName))status=s;}notifyState();}
     @Override public void onError(String e){synchronized(this){status=e;}notifyState();}
     private void notifyState(){Snapshot s=snapshot();for(Observer o:observers)o.onState(s);}public synchronized boolean isActive(){return active;}public synchronized String sttEngine(){return sttEngineName;}public synchronized boolean isWhisperAvailable(){return whisperSpeech.isAvailable();}
 }
