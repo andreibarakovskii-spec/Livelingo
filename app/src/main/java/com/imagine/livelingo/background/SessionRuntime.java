@@ -57,8 +57,14 @@ public final class SessionRuntime implements SttEngine.Listener {
         },(text,language,finalChunk,profile)->systemSpeaker.speak(text,finalChunk,language,bandFromInt(profile)));
         systemSpeech=new SystemSttEngine(context,this);whisperSpeech=new WhisperOnnxEngine(context,this);selectBestEngine();
     }
-    private void selectBestEngine(){if(whisperSpeech.isAvailable()){speech=whisperSpeech;sttEngineName="whisper";}else{speech=systemSpeech;sttEngineName="system";}speech.setInputLanguage("conversation".equals(mode)?"auto":inputLanguage);}
-    public synchronized void refreshEngine(){if(active)return;selectBestEngine();status="whisper".equals(sttEngineName)?"LiveLingo AI готов":"Системное распознавание · AI-модель не установлена";notifyState();}
+
+    /** Meeting and Conversation prefer the persistent PCM/Whisper path. The system recognizer is only a compatibility fallback. */
+    private void selectBestEngine(){
+        if(whisperSpeech.isAvailable()){speech=whisperSpeech;sttEngineName="whisper";}else{speech=systemSpeech;sttEngineName="system";}
+        boolean continuousMode="conversation".equals(mode)||"meeting".equals(mode);
+        speech.setInputLanguage(continuousMode?"auto":inputLanguage);
+    }
+    public synchronized void refreshEngine(){if(active)return;selectBestEngine();status="whisper".equals(sttEngineName)?"LiveLingo AI готов":"Системное распознавание · установите Whisper для бесшумной непрерывной записи";notifyState();}
     public void addObserver(Observer o){if(o!=null){observers.addIfAbsent(o);o.onState(snapshot());}}public void removeObserver(Observer o){observers.remove(o);}
     public synchronized Snapshot snapshot(){return new Snapshot(active,mode,status,sourceText,translatedText,detectedLanguage,sttEngineName,speakerLabel,voiceMode,whisperSpeech.isAvailable(),neuralSpeaker.isInstalled(),neuralSpeaker.isMultilingualInstalled(),Collections.unmodifiableList(new ArrayList<>(insights)));}
 
@@ -85,10 +91,19 @@ public final class SessionRuntime implements SttEngine.Listener {
         boolean pairChanged=!nextMode.equals(this.mode)||!nextInput.equals(this.inputLanguage)||!nextTarget.equals(this.targetLanguage);
         if(!pairChanged)return;
         this.mode=nextMode;this.inputLanguage=nextInput;this.targetLanguage=nextTarget;
-        speech.setInputLanguage("conversation".equals(this.mode)?"auto":this.inputLanguage);translator.setTarget(this.targetLanguage);systemSpeaker.selectOfflineVoice("auto".equals(this.targetLanguage)?"ru":this.targetLanguage);spokenDiff.reset();utteranceGeneration++;
+        boolean continuousMode="conversation".equals(this.mode)||"meeting".equals(this.mode);
+        speech.setInputLanguage(continuousMode?"auto":this.inputLanguage);translator.setTarget(this.targetLanguage);systemSpeaker.selectOfflineVoice("auto".equals(this.targetLanguage)?"ru":this.targetLanguage);spokenDiff.reset();utteranceGeneration++;
         learnedConversationLang1=null;learnedConversationLang2=null;speakerRouter.reset();currentSpeaker=1;speakerLabel="";
     }
-    public synchronized void start(){if(active)return;selectBestEngine();active=true;status="whisper".equals(sttEngineName)?"LiveLingo AI запускается…":"Слушаю…";sourceText="";translatedText="";spokenDiff.reset();utteranceGeneration++;speakerRouter.reset();learnedConversationLang1=null;learnedConversationLang2=null;currentSpeaker=1;speakerLabel="";if(!"auto".equals(targetLanguage))systemSpeaker.selectOfflineVoice(targetLanguage);if("meeting".equals(mode)){meetingStore.start();meetingEngine.reset();insights.clear();}speech.start();notifyState();}
+    public synchronized void start(){
+        if(active)return;selectBestEngine();active=true;
+        if("meeting".equals(mode))status="whisper".equals(sttEngineName)?"Непрерывная запись встречи · микрофон не закрывается":"Режим совместимости · установите Whisper, чтобы убрать системные сигналы";
+        else status="whisper".equals(sttEngineName)?"LiveLingo AI запускается…":"Слушаю…";
+        sourceText="";translatedText="";spokenDiff.reset();utteranceGeneration++;speakerRouter.reset();learnedConversationLang1=null;learnedConversationLang2=null;currentSpeaker=1;speakerLabel="";
+        if(!"auto".equals(targetLanguage))systemSpeaker.selectOfflineVoice(targetLanguage);
+        if("meeting".equals(mode)){meetingStore.start();meetingEngine.reset();insights.clear();}
+        speech.start();notifyState();
+    }
     public synchronized void stop(){if(!active)return;active=false;speech.stop();systemSpeaker.stop();neuralSpeaker.stop();spokenDiff.reset();speakerRouter.reset();utteranceGeneration++;status="Остановлено";notifyState();if("meeting".equals(mode))finalizeMeeting();}
     private void finalizeMeeting(){try{String report=MeetingReportBuilder.build(meetingStore,insights);String id=meetingStore.saveEncrypted("Совещание",report);for(Observer o:observers)o.onFinalizedMeeting(id,report);}catch(Exception e){status="Не удалось сохранить встречу";notifyState();}}
 
@@ -103,21 +118,36 @@ public final class SessionRuntime implements SttEngine.Listener {
 
     private void handleText(String text,boolean isFinal,String lang){
         final long generation;final String chosenTarget;final String hint;final String lineSpeaker;final VoiceProfile.Band voiceBand;
-        synchronized(this){sourceText=text;detectedLanguage=lang;generation=utteranceGeneration;
+        synchronized(this){
+            if(!"meeting".equals(mode))sourceText=text;
+            detectedLanguage=lang;generation=utteranceGeneration;
             if("conversation".equals(mode)){Direction d=conversationDirection(lang);chosenTarget=d.target;hint=d.source;lineSpeaker=d.label;speakerLabel=d.label;}
             else{chosenTarget=targetLanguage;hint="auto".equals(inputLanguage)?lang:inputLanguage;lineSpeaker="meeting".equals(mode)?("Спикер "+currentSpeaker):"Собеседник";speakerLabel=lineSpeaker;}
             voiceBand=currentVoice==null?VoiceProfile.Band.NEUTRAL:currentVoice.band;
         }
         if("meeting".equals(mode)&&isFinal){synchronized(this){insights.addAll(meetingEngine.analyze(text,meetingStore.durationMs()));}}
-        if(chosenTarget==null||"auto".equals(chosenTarget)){synchronized(this){translatedText="";status="conversation".equals(mode)?"Определяю язык второго собеседника…":"Язык перевода не выбран";}notifyState();return;}
+        if(chosenTarget==null||"auto".equals(chosenTarget)){
+            synchronized(this){translatedText="";status="conversation".equals(mode)?"Определяю язык второго собеседника…":"Язык перевода не выбран";
+                if("meeting".equals(mode)&&isFinal){meetingStore.add(lineSpeaker,lang,text,"");sourceText=buildMeetingChat();utteranceGeneration++;}}
+            notifyState();return;
+        }
         translator.translateAutoTo(text,hint,chosenTarget,new TranslationEngine.Callback(){
             @Override public void onTranslated(String sourceLanguage,String translated){
-                String toSpeak="";String outputMode;
+                String toSpeak="";String outputMode;boolean foreignToTarget;
                 synchronized(SessionRuntime.this){
-                    if(!active||generation!=utteranceGeneration)return;detectedLanguage=sourceLanguage;translatedText=translated;status=isFinal?"Слушаю дальше…":"Перевожу…";speakerLabel=lineSpeaker;outputMode=voiceMode;
-                    if("meeting".equals(mode)&&isFinal)meetingStore.add(lineSpeaker,sourceLanguage,text,translated);
-                    if(!"meeting".equals(mode)&&!VOICE_OFF.equals(outputMode)){toSpeak=isFinal?spokenDiff.flushFinal(translated):spokenDiff.acceptPartial(translated,false);if(isFinal){if(toSpeak.isBlank()&&spokenDiff.spokenWordCount()==0)toSpeak=translated;spokenDiff.reset();utteranceGeneration++;}}
-                    else if(isFinal){spokenDiff.reset();utteranceGeneration++;}
+                    if(!active||generation!=utteranceGeneration)return;
+                    detectedLanguage=sourceLanguage;foreignToTarget=!sameLanguage(sourceLanguage,chosenTarget);
+                    translatedText=foreignToTarget?translated:"";
+                    status=isFinal?("meeting".equals(mode)?"Запись продолжается…":"Слушаю дальше…"):"Перевожу…";speakerLabel=lineSpeaker;outputMode=voiceMode;
+                    if("meeting".equals(mode)&&isFinal){
+                        meetingStore.add(lineSpeaker,sourceLanguage,text,foreignToTarget?translated:"");
+                        sourceText=buildMeetingChat();
+                    }
+                    boolean voiceAllowed=!VOICE_OFF.equals(outputMode)&&foreignToTarget;
+                    if(voiceAllowed){
+                        toSpeak=isFinal?spokenDiff.flushFinal(translated):spokenDiff.acceptPartial(translated,false);
+                        if(isFinal){if(toSpeak.isBlank()&&spokenDiff.spokenWordCount()==0)toSpeak=translated;spokenDiff.reset();utteranceGeneration++;}
+                    }else if(isFinal){spokenDiff.reset();utteranceGeneration++;}
                 }
                 if(!toSpeak.isBlank()){
                     if(VOICE_SYSTEM.equals(outputMode))systemSpeaker.speak(toSpeak,isFinal,chosenTarget,voiceBand);
@@ -125,24 +155,47 @@ public final class SessionRuntime implements SttEngine.Listener {
                 }
                 notifyState();
             }
-            @Override public void onError(String message){synchronized(SessionRuntime.this){if(generation!=utteranceGeneration)return;status=message;}notifyState();}
+            @Override public void onError(String message){
+                synchronized(SessionRuntime.this){
+                    if(generation!=utteranceGeneration)return;status=message;
+                    if("meeting".equals(mode)&&isFinal){meetingStore.add(lineSpeaker,lang,text,"");sourceText=buildMeetingChat();utteranceGeneration++;}
+                }
+                notifyState();
+            }
         });notifyState();
+    }
+
+    private synchronized String buildMeetingChat(){
+        StringBuilder sb=new StringBuilder();
+        for(MeetingSessionStore.Entry e:meetingStore.entries()){
+            if(sb.length()>0)sb.append("\n\n");
+            long total=e.elapsedMs/1000;long mm=total/60,ss=total%60;
+            sb.append(String.format(java.util.Locale.US,"[%02d:%02d] ",mm,ss)).append(e.speaker==null?"Спикер":e.speaker).append("\n");
+            sb.append(e.original==null?"":e.original);
+            if(e.translated!=null&&!e.translated.isBlank())sb.append("\n↳ ").append(e.translated);
+        }
+        return sb.toString();
     }
 
     @Override public void onSpeechStart(){
         boolean interrupted=false;
         synchronized(this){
-            if(!active||"meeting".equals(mode)||VOICE_OFF.equals(voiceMode))return;
+            if(!active||VOICE_OFF.equals(voiceMode))return;
             interrupted=systemSpeaker.isSpeaking()||neuralSpeaker.isSpeaking();
             if(interrupted){status="Слушаю вас · озвучка прервана";spokenDiff.reset();}
         }
         if(interrupted){systemSpeaker.stop();neuralSpeaker.stop();notifyState();}
     }
 
+    private static boolean sameLanguage(String a,String b){String x=shortLang(a),y=shortLang(b);return x!=null&&y!=null&&x.equals(y);}
     private static String normalizeVoiceMode(String s){return VOICE_AI.equals(s)?VOICE_AI:(VOICE_SYSTEM.equals(s)?VOICE_SYSTEM:VOICE_OFF);}
     private static int bandToInt(VoiceProfile.Band b){return b==VoiceProfile.Band.LOW?0:(b==VoiceProfile.Band.HIGH?2:1);}private static VoiceProfile.Band bandFromInt(int p){return p<=0?VoiceProfile.Band.LOW:(p>=2?VoiceProfile.Band.HIGH:VoiceProfile.Band.NEUTRAL);}
     private static String shortLang(String tag){if(tag==null||tag.isBlank()||"auto".equalsIgnoreCase(tag))return null;return tag.split("[-_]")[0].toLowerCase();}
     @Override public void onVoiceProfile(VoiceProfile profile){synchronized(this){SpeakerRouter.Match m=speakerRouter.assign(profile);currentSpeaker=m.speaker;currentVoice=m.profile;speakerLabel=("meeting".equals(mode)?"Спикер ":"Собеседник ")+currentSpeaker;}notifyState();}
-    @Override public void onReady(){synchronized(this){status="Говорите";}notifyState();}@Override public void onPartial(String text,String language){handleText(text,false,language);}@Override public void onFinal(String text,String language){handleText(text,true,language);}@Override public void onStatus(String s){synchronized(this){status=s;}notifyState();}@Override public void onError(String e){synchronized(this){status=e;}notifyState();}
+    @Override public void onReady(){synchronized(this){status="meeting".equals(mode)?("whisper".equals(sttEngineName)?"Запись идёт непрерывно":"Готов · системный режим совместимости"):"Говорите";}notifyState();}
+    @Override public void onPartial(String text,String language){handleText(text,false,language);}
+    @Override public void onFinal(String text,String language){handleText(text,true,language);}
+    @Override public void onStatus(String s){synchronized(this){if(!"meeting".equals(mode)||!"whisper".equals(sttEngineName))status=s;}notifyState();}
+    @Override public void onError(String e){synchronized(this){status=e;}notifyState();}
     private void notifyState(){Snapshot s=snapshot();for(Observer o:observers)o.onState(s);}public synchronized boolean isActive(){return active;}public synchronized String sttEngine(){return sttEngineName;}public synchronized boolean isWhisperAvailable(){return whisperSpeech.isAvailable();}
 }
