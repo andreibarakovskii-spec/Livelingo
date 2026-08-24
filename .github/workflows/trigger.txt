@@ -1,1 +1,1 @@
-trigger build
+trigger diagnostic build 2026-08-24
