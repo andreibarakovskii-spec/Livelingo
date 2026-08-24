@@ -1,5 +1,6 @@
 package com.imagine.livelingo.stt;
 
+import com.imagine.livelingo.audio.SpeakerRouter;
 import com.imagine.livelingo.audio.VoiceProfile;
 
 public interface SttEngine {
@@ -11,7 +12,7 @@ public interface SttEngine {
         void onStatus(String status);
         default void onVoiceProfile(VoiceProfile profile) {}
         /** Stable 1-based speaker id produced by neural speaker embeddings. */
-        default void onSpeakerId(int speakerId) {}
+        default void onSpeakerId(int speakerId) { SpeakerRouter.forceNextSpeaker(speakerId); }
         /** Fired when a new acoustic speech segment begins, before transcription is ready. */
         default void onSpeechStart() {}
     }
