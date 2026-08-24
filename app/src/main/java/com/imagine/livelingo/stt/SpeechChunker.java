@@ -12,8 +12,10 @@ public final class SpeechChunker {
     private final List<Float> speech=new ArrayList<>();
     private static final int SAMPLE_RATE=16000;
     private static final int PRE_ROLL=SAMPLE_RATE*65/100;
-    private static final int END_SILENCE=SAMPLE_RATE*40/100;
-    private static final int MIN_SPEECH=SAMPLE_RATE*18/100;
+    // Long enough not to split a natural ~400 ms hesitation, short enough for responsive UI.
+    private static final int END_SILENCE=SAMPLE_RATE*52/100;
+    // Reject very short clicks/noise while retaining normal short words.
+    private static final int MIN_SPEECH=SAMPLE_RATE*24/100;
     private static final int PARTIAL_INTERVAL=SAMPLE_RATE*9/10;
     private final float[] preRoll=new float[PRE_ROLL];
     private int preWrite,preCount,silentSamples,voicedSamples,sincePartial;
