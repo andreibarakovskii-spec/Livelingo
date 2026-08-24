@@ -8,6 +8,7 @@ import android.media.AudioRecord;
 import android.media.MediaRecorder;
 import android.media.audiofx.AcousticEchoCanceler;
 import android.media.audiofx.NoiseSuppressor;
+import com.imagine.livelingo.DebugTrace;
 
 /** Captures mono 16 kHz PCM16 audio for local ASR with best-effort hardware echo control. */
 public final class PcmAudioCapture {
@@ -25,28 +26,31 @@ public final class PcmAudioCapture {
 
     public synchronized void start(){
         if(running)return;
-        if(context.checkSelfPermission(Manifest.permission.RECORD_AUDIO)!=PackageManager.PERMISSION_GRANTED){listener.onError("Нет доступа к микрофону");return;}
+        if(context.checkSelfPermission(Manifest.permission.RECORD_AUDIO)!=PackageManager.PERMISSION_GRANTED){DebugTrace.logGlobal("PCM_ERROR","permission denied");listener.onError("Нет доступа к микрофону");return;}
         int min=AudioRecord.getMinBufferSize(SAMPLE_RATE,AudioFormat.CHANNEL_IN_MONO,AudioFormat.ENCODING_PCM_16BIT);
-        if(min<=0){listener.onError("Не удалось подготовить аудиобуфер");return;}
+        if(min<=0){DebugTrace.logGlobal("PCM_ERROR","minBuffer="+min);listener.onError("Не удалось подготовить аудиобуфер");return;}
         int bytes=Math.max(min,SAMPLE_RATE/2*2);
-        // VOICE_COMMUNICATION allows Android DSP to apply acoustic echo cancellation on devices
-        // that support it. We still fall back gracefully if the effect is unavailable.
         record=new AudioRecord(MediaRecorder.AudioSource.VOICE_COMMUNICATION,SAMPLE_RATE,AudioFormat.CHANNEL_IN_MONO,AudioFormat.ENCODING_PCM_16BIT,bytes*2);
-        if(record.getState()!=AudioRecord.STATE_INITIALIZED){record.release();record=null;listener.onError("Не удалось открыть микрофон");return;}
+        if(record.getState()!=AudioRecord.STATE_INITIALIZED){record.release();record=null;DebugTrace.logGlobal("PCM_ERROR","AudioRecord init failed");listener.onError("Не удалось открыть микрофон");return;}
         int session=record.getAudioSessionId();
         try{if(AcousticEchoCanceler.isAvailable()){echoCanceler=AcousticEchoCanceler.create(session);if(echoCanceler!=null)echoCanceler.setEnabled(true);}}catch(Throwable ignored){echoCanceler=null;}
         try{if(NoiseSuppressor.isAvailable()){noiseSuppressor=NoiseSuppressor.create(session);if(noiseSuppressor!=null)noiseSuppressor.setEnabled(true);}}catch(Throwable ignored){noiseSuppressor=null;}
+        DebugTrace.logGlobal("PCM_START","source=VOICE_COMMUNICATION rate="+SAMPLE_RATE+" min_bytes="+min+" buffer_bytes="+(bytes*2)+" aec="+(echoCanceler!=null&&echoCanceler.getEnabled())+" ns="+(noiseSuppressor!=null&&noiseSuppressor.getEnabled()));
         running=true;record.startRecording();thread=new Thread(()->loop(bytes/2),"livelingo-pcm");thread.start();
     }
 
     private void loop(int shortsPerRead){
-        short[] buf=new short[shortsPerRead];
+        short[] buf=new short[shortsPerRead];long lastDiag=0;
         while(running){
             AudioRecord r=record;if(r==null)break;
             int n=r.read(buf,0,buf.length,AudioRecord.READ_BLOCKING);
-            if(n>0){float[] out=new float[n];for(int i=0;i<n;i++)out[i]=buf[i]/32768f;listener.onPcm(out);}
-            else if(n<0){listener.onError("Ошибка чтения микрофона: "+n);break;}
+            if(n>0){
+                float[] out=new float[n];double sum=0;float peak=0;for(int i=0;i<n;i++){out[i]=buf[i]/32768f;sum+=out[i]*out[i];peak=Math.max(peak,Math.abs(out[i]));}
+                long now=System.currentTimeMillis();if(now-lastDiag>=1000){float rms=(float)Math.sqrt(sum/n);DebugTrace.logGlobal("PCM_LEVEL","rms="+fmt(rms)+" peak="+fmt(peak)+" samples="+n);lastDiag=now;}
+                listener.onPcm(out);
+            } else if(n<0){DebugTrace.logGlobal("PCM_ERROR","read="+n);listener.onError("Ошибка чтения микрофона: "+n);break;}
         }
+        DebugTrace.logGlobal("PCM_LOOP_END","");
     }
 
     public synchronized void stop(){
@@ -56,5 +60,7 @@ public final class PcmAudioCapture {
         if(noiseSuppressor!=null){try{noiseSuppressor.release();}catch(Exception ignored){}noiseSuppressor=null;}
         if(record!=null){record.release();record=null;}
         if(thread!=null){try{thread.join(300);}catch(InterruptedException ignored){Thread.currentThread().interrupt();}thread=null;}
+        DebugTrace.logGlobal("PCM_STOP","");
     }
+    private static String fmt(float v){return String.format(java.util.Locale.US,"%.4f",v);}
 }
