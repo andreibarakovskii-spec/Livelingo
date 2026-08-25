@@ -14,110 +14,13 @@ import java.util.Map;
 
 /** sherpa-onnx Supertonic 3 bridge for multilingual local TTS. */
 public final class SupertonicBridge {
-    private static OfflineTts tts;
-    private static String loadedDir;
-    private SupertonicBridge() {}
-
-    public static synchronized boolean ensureLoaded(String modelDir){
-        if(tts!=null&&modelDir.equals(loadedDir))return true;
-        File d=new File(modelDir);
-        File duration=new File(d,"duration_predictor.int8.onnx");
-        File textEncoder=new File(d,"text_encoder.int8.onnx");
-        File vectorEstimator=new File(d,"vector_estimator.int8.onnx");
-        File vocoder=new File(d,"vocoder.int8.onnx");
-        File ttsJson=new File(d,"tts.json");
-        File unicodeIndexer=new File(d,"unicode_indexer.bin");
-        File voiceStyle=new File(d,"voice.bin");
-        if(!duration.isFile()||!textEncoder.isFile()||!vectorEstimator.isFile()||!vocoder.isFile()||!ttsJson.isFile()||!unicodeIndexer.isFile()||!voiceStyle.isFile()){
-            DebugTrace.logGlobal("TTS_MODEL_ERROR","engine=supertonic reason=missing_files dir="+modelDir);
-            return false;
-        }
-        try{
-            release();
-            OfflineTtsSupertonicModelConfig sc=OfflineTtsSupertonicModelConfig.builder()
-                    .setDurationPredictor(duration.getAbsolutePath())
-                    .setTextEncoder(textEncoder.getAbsolutePath())
-                    .setVectorEstimator(vectorEstimator.getAbsolutePath())
-                    .setVocoder(vocoder.getAbsolutePath())
-                    .setTtsJson(ttsJson.getAbsolutePath())
-                    .setUnicodeIndexer(unicodeIndexer.getAbsolutePath())
-                    .setVoiceStyle(voiceStyle.getAbsolutePath())
-                    .build();
-            OfflineTtsModelConfig mc=OfflineTtsModelConfig.builder().setSupertonic(sc).setNumThreads(2).setDebug(false).setProvider("cpu").build();
-            tts=new OfflineTts(OfflineTtsConfig.builder().setModel(mc).build());
-            loadedDir=modelDir;
-            DebugTrace.logGlobal("TTS_MODEL_READY","engine=supertonic dir="+d.getName());
-            return true;
-        }catch(Throwable e){
-            tts=null;loadedDir=null;
-            DebugTrace.logGlobal("TTS_MODEL_ERROR","engine=supertonic load="+safe(e));
-            return false;
-        }
-    }
-
-    public static synchronized byte[] synthesize(String modelDir,String text,String language,int voiceProfile){
-        if(text==null||text.isBlank())return null;
-        final String lang=normalizeLanguage(language);
-        if(!isSupported(lang)){
-            DebugTrace.logGlobal("TTS_ERROR","engine=supertonic lang="+lang+" reason=unsupported_language");
-            return null;
-        }
-        if(!ensureLoaded(modelDir))return null;
-        long started=System.currentTimeMillis();
-        try{
-            GenerationConfig gc=new GenerationConfig();
-            gc.setSid(voiceProfile<=0?0:(voiceProfile>=2?6:3));
-            gc.setSpeed(1.0f);
-            // Match the current official sherpa-onnx Supertonic 3 examples.
-            gc.setNumSteps(8);
-            gc.setSilenceScale(0.16f);
-            Map<String,String> extra=new HashMap<>();
-            extra.put("lang",lang);
-            gc.setExtra(extra);
-            DebugTrace.logGlobal("TTS_REQUEST","engine=supertonic lang="+lang+" chars="+text.length()+" sid="+(voiceProfile<=0?0:(voiceProfile>=2?6:3))+" text="+preview(text));
-            GeneratedAudio a=tts.generateWithConfigAndCallback(text,gc,samples->{});
-            long elapsed=System.currentTimeMillis()-started;
-            if(a==null||a.getSamples()==null||a.getSamples().length==0){
-                DebugTrace.logGlobal("TTS_ERROR","engine=supertonic lang="+lang+" ms="+elapsed+" reason=empty_audio");
-                return null;
-            }
-            float seconds=a.getSamples().length/(float)Math.max(1,a.getSampleRate());
-            DebugTrace.logGlobal("TTS_OK","engine=supertonic lang="+lang+" ms="+elapsed+" audio_s="+String.format(java.util.Locale.US,"%.2f",seconds)+" rate="+a.getSampleRate()+" samples="+a.getSamples().length);
-            return wav16(a.getSamples(),a.getSampleRate());
-        }catch(Throwable e){
-            DebugTrace.logGlobal("TTS_ERROR","engine=supertonic lang="+lang+" ms="+(System.currentTimeMillis()-started)+" error="+safe(e));
-            return null;
-        }
-    }
-
-    public static synchronized boolean selfTest(String modelDir){
-        String[][] probes={{"ru","Проверка русского голоса."},{"en","English voice test."},{"de","Test der deutschen Stimme."}};
-        boolean ok=true;
-        for(String[] p:probes){
-            byte[] wav=synthesize(modelDir,p[1],p[0],1);
-            boolean pass=wav!=null&&wav.length>256;
-            DebugTrace.logGlobal("TTS_SELFTEST","engine=supertonic lang="+p[0]+" result="+(pass?"ok":"fail")+" bytes="+(wav==null?0:wav.length));
-            ok&=pass;
-        }
-        return ok;
-    }
-
-    public static synchronized void release(){if(tts!=null){try{tts.release();}catch(Throwable ignored){}}tts=null;loadedDir=null;}
-    public static synchronized boolean isLoaded(){return tts!=null;}
-
-    private static boolean isSupported(String l){
-        return "en".equals(l)||"ko".equals(l)||"ja".equals(l)||"ar".equals(l)||"bg".equals(l)||"cs".equals(l)||"da".equals(l)||"de".equals(l)||"el".equals(l)||"es".equals(l)||"et".equals(l)||"fi".equals(l)||"fr".equals(l)||"hi".equals(l)||"hr".equals(l)||"hu".equals(l)||"id".equals(l)||"it".equals(l)||"lt".equals(l)||"lv".equals(l)||"nl".equals(l)||"pl".equals(l)||"pt".equals(l)||"ro".equals(l)||"ru".equals(l)||"sk".equals(l)||"sl".equals(l)||"sv".equals(l)||"tr".equals(l)||"uk".equals(l)||"vi".equals(l);
-    }
-
-    private static String normalizeLanguage(String tag){
-        if(tag==null||tag.isBlank())return "en";String l=tag.split("[-_]")[0].toLowerCase();
-        if("deu".equals(l))return "de";if("fra".equals(l))return "fr";if("rus".equals(l))return "ru";if("spa".equals(l))return "es";if("ita".equals(l))return "it";if("por".equals(l))return "pt";if("ukr".equals(l))return "uk";if("pol".equals(l))return "pl";if("tur".equals(l))return "tr";if("jpn".equals(l))return "ja";if("kor".equals(l))return "ko";if("zho".equals(l)||"chi".equals(l))return "zh";return l;
-    }
-    private static String preview(String s){String x=s==null?"":s.replace('\n',' ').replace('\r',' ').trim();return x.length()>100?x.substring(0,100)+"…":x;}
-    private static String safe(Throwable e){String s=e==null?"unknown":(e.getMessage()==null?e.getClass().getSimpleName():e.getClass().getSimpleName()+":"+e.getMessage());return s.replace('\n',' ').replace('\r',' ');}
-
-    private static byte[] wav16(float[] samples,int rate){int dataLen=samples.length*2;ByteArrayOutputStream o=new ByteArrayOutputStream(44+dataLen);writeAscii(o,"RIFF");le32(o,36+dataLen);writeAscii(o,"WAVEfmt ");le32(o,16);le16(o,1);le16(o,1);le32(o,rate);le32(o,rate*2);le16(o,2);le16(o,16);writeAscii(o,"data");le32(o,dataLen);for(float f:samples){int v=(int)(Math.max(-1f,Math.min(1f,f))*32767f);le16(o,v);}return o.toByteArray();}
-    private static void writeAscii(ByteArrayOutputStream o,String s){for(int i=0;i<s.length();i++)o.write((byte)s.charAt(i));}
-    private static void le16(ByteArrayOutputStream o,int v){o.write(v&255);o.write((v>>>8)&255);}
-    private static void le32(ByteArrayOutputStream o,int v){le16(o,v);le16(o,v>>>16);}
+    private static OfflineTts tts; private static String loadedDir; private SupertonicBridge() {}
+    public static synchronized boolean ensureLoaded(String modelDir){if(tts!=null&&modelDir.equals(loadedDir))return true;File d=new File(modelDir);File duration=new File(d,"duration_predictor.int8.onnx"),textEncoder=new File(d,"text_encoder.int8.onnx"),vectorEstimator=new File(d,"vector_estimator.int8.onnx"),vocoder=new File(d,"vocoder.int8.onnx"),ttsJson=new File(d,"tts.json"),unicodeIndexer=new File(d,"unicode_indexer.bin"),voiceStyle=new File(d,"voice.bin");if(!duration.isFile()||!textEncoder.isFile()||!vectorEstimator.isFile()||!vocoder.isFile()||!ttsJson.isFile()||!unicodeIndexer.isFile()||!voiceStyle.isFile()){DebugTrace.logGlobal("TTS_MODEL_ERROR","engine=supertonic reason=missing_files dir="+modelDir);return false;}try{release();OfflineTtsSupertonicModelConfig sc=OfflineTtsSupertonicModelConfig.builder().setDurationPredictor(duration.getAbsolutePath()).setTextEncoder(textEncoder.getAbsolutePath()).setVectorEstimator(vectorEstimator.getAbsolutePath()).setVocoder(vocoder.getAbsolutePath()).setTtsJson(ttsJson.getAbsolutePath()).setUnicodeIndexer(unicodeIndexer.getAbsolutePath()).setVoiceStyle(voiceStyle.getAbsolutePath()).build();OfflineTtsModelConfig mc=OfflineTtsModelConfig.builder().setSupertonic(sc).setNumThreads(2).setDebug(false).setProvider("cpu").build();tts=new OfflineTts(OfflineTtsConfig.builder().setModel(mc).build());loadedDir=modelDir;DebugTrace.logGlobal("TTS_MODEL_READY","engine=supertonic dir="+d.getName());return true;}catch(Throwable e){tts=null;loadedDir=null;DebugTrace.logGlobal("TTS_MODEL_ERROR","engine=supertonic load="+safe(e));return false;}}
+    public static synchronized byte[] synthesize(String modelDir,String text,String language,int voiceProfile){if(text==null||text.isBlank())return null;final String lang=normalizeLanguage(language);if(!isSupported(lang)){DebugTrace.logGlobal("TTS_ERROR","engine=supertonic lang="+lang+" reason=unsupported_language");return null;}if(!ensureLoaded(modelDir))return null;long started=System.currentTimeMillis();try{GenerationConfig gc=new GenerationConfig();gc.setSid(voiceProfile<=0?0:(voiceProfile>=2?6:3));gc.setSpeed(1.0f);gc.setNumSteps(8);gc.setSilenceScale(0.16f);Map<String,String> extra=new HashMap<>();extra.put("lang",lang);gc.setExtra(extra);DebugTrace.logGlobal("TTS_REQUEST","engine=supertonic lang="+lang+" chars="+text.length()+" text="+preview(text));GeneratedAudio a=tts.generateWithConfigAndCallback(text,gc,samples->{});long elapsed=System.currentTimeMillis()-started;if(a==null||a.getSamples()==null||a.getSamples().length==0){DebugTrace.logGlobal("TTS_ERROR","engine=supertonic lang="+lang+" ms="+elapsed+" reason=empty_audio");return null;}DebugTrace.logGlobal("TTS_OK","engine=supertonic lang="+lang+" ms="+elapsed+" samples="+a.getSamples().length);return wav16(a.getSamples(),a.getSampleRate());}catch(Throwable e){DebugTrace.logGlobal("TTS_ERROR","engine=supertonic lang="+lang+" ms="+(System.currentTimeMillis()-started)+" error="+safe(e));return null;}}
+    public static boolean isSupportedLanguage(String tag){return isSupported(normalizeLanguage(tag));}
+    public static synchronized void release(){if(tts!=null){try{tts.release();}catch(Throwable ignored){}}tts=null;loadedDir=null;} public static synchronized boolean isLoaded(){return tts!=null;}
+    private static boolean isSupported(String l){return "en".equals(l)||"ko".equals(l)||"ja".equals(l)||"ar".equals(l)||"bg".equals(l)||"cs".equals(l)||"da".equals(l)||"de".equals(l)||"el".equals(l)||"es".equals(l)||"et".equals(l)||"fi".equals(l)||"fr".equals(l)||"hi".equals(l)||"hr".equals(l)||"hu".equals(l)||"id".equals(l)||"it".equals(l)||"lt".equals(l)||"lv".equals(l)||"nl".equals(l)||"pl".equals(l)||"pt".equals(l)||"ro".equals(l)||"ru".equals(l)||"sk".equals(l)||"sl".equals(l)||"sv".equals(l)||"tr".equals(l)||"uk".equals(l)||"vi".equals(l);}
+    private static String normalizeLanguage(String tag){if(tag==null||tag.isBlank())return "en";String l=tag.split("[-_]")[0].toLowerCase();if("deu".equals(l))return "de";if("fra".equals(l))return "fr";if("rus".equals(l))return "ru";if("spa".equals(l))return "es";if("ita".equals(l))return "it";if("por".equals(l))return "pt";if("ukr".equals(l))return "uk";if("pol".equals(l))return "pl";if("tur".equals(l))return "tr";if("jpn".equals(l))return "ja";if("kor".equals(l))return "ko";return l;}
+    private static String preview(String s){String x=s==null?"":s.replace('\n',' ').trim();return x.length()>100?x.substring(0,100)+"…":x;} private static String safe(Throwable e){return e==null?"unknown":String.valueOf(e.getMessage());}
+    private static byte[] wav16(float[] samples,int rate){int dataLen=samples.length*2;ByteArrayOutputStream o=new ByteArrayOutputStream(44+dataLen);writeAscii(o,"RIFF");le32(o,36+dataLen);writeAscii(o,"WAVEfmt ");le32(o,16);le16(o,1);le16(o,1);le32(o,rate);le32(o,rate*2);le16(o,2);le16(o,16);writeAscii(o,"data");le32(o,dataLen);for(float f:samples){int v=(int)(Math.max(-1f,Math.min(1f,f))*32767f);le16(o,v);}return o.toByteArray();}private static void writeAscii(ByteArrayOutputStream o,String s){for(int i=0;i<s.length();i++)o.write((byte)s.charAt(i));}private static void le16(ByteArrayOutputStream o,int v){o.write(v&255);o.write((v>>>8)&255);}private static void le32(ByteArrayOutputStream o,int v){le16(o,v);le16(o,v>>>16);}
 }
