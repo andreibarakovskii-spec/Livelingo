@@ -1,1 +1,1 @@
-trigger build
+trigger voice readiness warmup build 2026-08-25
