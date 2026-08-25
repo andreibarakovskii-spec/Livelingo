@@ -1,1 +1,1 @@
-trigger supertonic multilingual build 2026-08-24
+trigger voice readiness warmup build 2026-08-25
